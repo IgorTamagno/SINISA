@@ -10,7 +10,10 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils.dataframe import dataframe_to_rows
 from plotly.subplots import make_subplots
 import zipfile
-
+import io
+import zipfile
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment
 # ============================================================================
 # CONFIGURAÇÃO INICIAL
 # ============================================================================
@@ -190,6 +193,7 @@ def get_modulo_color(modulo):
     # Padrão se não encontrar
     return palette['água']
 
+# Na função sort_modulos() (linha ~300):
 def sort_modulos(modulos_list):
     """Ordena módulos: Água, Esgoto, Informações Complementares"""
     modulos_validos = [str(m).strip() for m in modulos_list if pd.notna(m) and str(m).strip() != 'nan']
@@ -223,6 +227,32 @@ def get_col_letter(col_num):
         col_num //= 26
     return result
 
+@st.cache_data
+def obter_anos_disponiveis():
+    """Obtém dinamicamente os anos disponíveis (abas) no arquivo Dados_SINISA.xlsx"""
+    file_path = os.path.join(DATA_DIR, "Dados_SINISA.xlsx")
+    try:
+        # Ler nomes de todas as abas do arquivo
+        xls = pd.ExcelFile(file_path)
+        sheet_names = xls.sheet_names
+        
+        # Filtrar apenas abas que são números (anos)
+        anos = []
+        for sheet in sheet_names:
+            try:
+                ano = int(sheet)
+                anos.append(ano)
+            except ValueError:
+                # Ignorar abas que não são números
+                pass
+        
+        # Ordenar em ordem decrescente (mais recente primeiro)
+        anos_ordenados = sorted(anos, reverse=True)
+        
+        return anos_ordenados if anos_ordenados else [2026]
+    except Exception as e:
+        st.error(f"❌ Erro ao obter anos disponíveis: {str(e)}")
+        return [2026]
 # ============================================================================
 # CARREGAMENTO E CACHE DE DADOS
 # ============================================================================
@@ -241,18 +271,27 @@ def load_data():
     return df
 
 @st.cache_data
-def load_dados_agems():
-    """Carrega dados AGEMS"""
+def load_dados_agems(ano):
+    """Carrega dados AGEMS da aba específica do ano selecionado"""
     file_path = os.path.join(DATA_DIR, "Dados_SINISA.xlsx")
     try:
-        df_agems = pd.read_excel(file_path, sheet_name="Dados AGEMS")
+        # Lê a aba correspondente ao ano
+        df_agems = pd.read_excel(file_path, sheet_name=str(ano))
         df_agems.columns = df_agems.columns.str.strip()
+        
+        # Filtra apenas as linhas que têm "SIM" na coluna "Relatório Gerencial - AGEMS"
+        if 'Relatório Gerencial - AGEMS' in df_agems.columns:
+            df_agems = df_agems[
+                df_agems['Relatório Gerencial - AGEMS'].astype(str).str.strip().str.upper() == 'SIM'
+            ].copy()
+        
+        # Mapeamento de colunas
         mapa_colunas = {
             'Código IBGE - Município': 'codigo_ibge_municipio',
             'Município': 'municipio',
             'Módulo': 'modulo',
             'Formulário': 'formulario',
-            'Subformulário/Gruopo': 'subformulario_gruopo',
+            'Subformulário/Grupo': 'subformulario_grupo', 
             'Subgrupo/Palavra-chave': 'subgrupo_palavra_chave',
             'Área Responsável': 'area_responsavel',
             'Código da informação/indicador': 'codigo_da_informacao_indicador',
@@ -261,27 +300,77 @@ def load_dados_agems():
             'Unidade': 'unidade',
             'Informação Completa': 'informacao_completa'
         }
+        
+        # Renomear colunas que existem
         for col_original, col_novo in mapa_colunas.items():
             if col_original in df_agems.columns:
                 df_agems = df_agems.rename(columns={col_original: col_novo})
+        
         return df_agems
     except Exception as e:
-        st.error(f"❌ Erro ao carregar dados AGEMS: {str(e)}")
+        st.error(f"❌ Erro ao carregar dados AGEMS do ano {ano}: {str(e)}")
         return None
 
-@st.cache_data
-def load_dados_sinisa():
-    """Carrega dados SINISA"""
+def load_dados_agems_por_ano(ano):
+    """Carrega dados AGEMS da aba específica do ano"""
     file_path = os.path.join(DATA_DIR, "Dados_SINISA.xlsx")
     try:
-        df_sinisa = pd.read_excel(file_path, sheet_name="Dados SINISA")
-        df_sinisa.columns = df_sinisa.columns.str.strip()
+        # Lê a aba do ano selecionado
+        df_agems = pd.read_excel(file_path, sheet_name=str(ano))
+        df_agems.columns = df_agems.columns.str.strip()
+        
+        # Filtra apenas as linhas que têm "SIM" na coluna "Relatório Gerencial - AGEMS"
+        if 'Relatório Gerencial - AGEMS' in df_agems.columns:
+            df_agems = df_agems[
+                df_agems['Relatório Gerencial - AGEMS'].astype(str).str.strip().str.upper() == 'SIM'
+            ].copy()
+        
+        # Mapeamento de colunas
         mapa_colunas = {
             'Código IBGE - Município': 'codigo_ibge_municipio',
             'Município': 'municipio',
             'Módulo': 'modulo',
             'Formulário': 'formulario',
-            'Subformulário/Gruopo': 'subformulario_gruopo',
+            'Subformulário/Grupo': 'subformulario_grupo', 
+            'Subgrupo/Palavra-chave': 'subgrupo_palavra_chave',
+            'Área Responsável': 'area_responsavel',
+            'Código da informação/indicador': 'codigo_da_informacao_indicador',
+            'Nome da informação/indicador': 'nome_da_informacao_indicador',
+            'Informação/Indicador': 'informacao_indicador',
+            'Unidade': 'unidade',
+            'Informação Completa': 'informacao_completa'
+        }
+        
+        # Renomear colunas que existem
+        for col_original, col_novo in mapa_colunas.items():
+            if col_original in df_agems.columns:
+                df_agems = df_agems.rename(columns={col_original: col_novo})
+        
+        return df_agems
+    except Exception as e:
+        st.error(f"❌ Erro ao carregar dados do ano {ano}: {str(e)}")
+        return None
+
+@st.cache_data
+def load_dados_sinisa(ano=2026):
+    """Carrega dados SINISA de uma aba específica (por ano)"""
+    file_path = os.path.join(DATA_DIR, "Dados_SINISA.xlsx")
+    try:
+        # Converter ano para string para usar como nome da aba
+        sheet_name = str(ano)
+        
+        df_sinisa = pd.read_excel(file_path, sheet_name=sheet_name)
+        df_sinisa.columns = df_sinisa.columns.str.strip()
+        
+        # Adicionar coluna de ano para referência
+        df_sinisa['ano'] = ano
+
+        mapa_colunas = {
+            'Código IBGE - Município': 'codigo_ibge_municipio',
+            'Município': 'municipio',
+            'Módulo': 'modulo',
+            'Formulário': 'formulario',
+            'Subformulário/Grupo': 'subformulario_grupo',
             'Subgrupo/Palavra-chave': 'subgrupo_palavra_chave',
             'Área Responsável': 'area_responsavel',
             'Código da informação/indicador': 'codigo_da_informacao_indicador',
@@ -289,7 +378,9 @@ def load_dados_sinisa():
             'Informação/Indicador': 'informacao_indicador',
             'Unidade': 'unidade',
             'Informação Completa': 'informacao_completa',
-            'Anual': 'anual'
+            'Anual': 'anual',           
+            'Acumulado em 12 meses': 'acumulado_12_meses',
+            'Média em 12 meses': 'media_12_meses'        
         }
         for col_original, col_novo in mapa_colunas.items():
             if col_original in df_sinisa.columns:
@@ -371,11 +462,143 @@ def criar_tabela_html(df_subgrupo, colunas_meses, largura_cod_desc=350, largura_
     return html
 
 def criar_relatorio_excel_generico(df_para_exportar, municipio_selecionado, colunas_meses):
-    """Cria relatório Excel genérico para município - Calibri 11, cores consistentes"""
+    """
+    Cria relatório Excel genérico para município com estética alinhada ao dashboard
+    - Cabeçalho nativo do Excel (aparece apenas na impressão)
+    - Tratamento específico para Informações Complementares
+    - Paleta de cores consistente
+    - Tipografia profissional
+    - Bordas e espaçamento otimizados
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    from datetime import datetime
+    import pandas as pd
+
+    # ====== ESTILOS INLINE ======
+    estilos_header_principal = {
+        'bg_color': '0B3040',
+        'font_color': 'FFFFFF',
+        'font_size': 12,
+        'bold': True
+    }
+    estilos_header_secundario = {
+        'bg_color': '1F4788',
+        'font_color': 'FFFFFF',
+        'font_size': 11,
+        'bold': True
+    }
+    estilos_row_alternado = 'F5F7FA'
+    estilos_row_normal = 'FFFFFF'
+    border_color = 'D0D8E0'
+    font_name = 'Calibri'
+    font_size_data = 11
+
     wb = Workbook()
     ws = wb.active
-    ws.title = municipio_selecionado[:31]
+    ws.title = str(municipio_selecionado)[:31]
+    ws.sheet_view.zoomScale = 90
+
+    # ====== CABEÇALHO NATIVO DO EXCEL (SINTAXE CORRETA) ======
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
+    ws.page_setup.orientation = 'landscape'
+    ws.page_margins.left = 1
+    ws.page_margins.right = 1
+    ws.page_margins.top = 1
+    ws.page_margins.bottom = 1
+    
+    # Definir cabeçalho e rodapé
+    ws.oddHeader.left.text = f"Empresa de Saneamento de Mato Grosso do Sul - SANESUL\nRelatório Gerencial - {municipio_selecionado} | {datetime.now().strftime('%m/%Y')} "
+    
+    ws.oddFooter.right.text = "Página &P de &N"
+
+    # Definir área de impressão até coluna N com 1 página de largura
+    ws.print_options.horizontalCentered = False
+    ws.page_setup.fitToPage = True
+    ws.page_setup.fitToHeight = 0
+    ws.page_setup.fitToWidth = 1
+    ws.print_area = f'A1:N1048576'
+
+    # Definir largura das colunas
+    ws.column_dimensions['A'].width = 132
+    ws.column_dimensions['B'].width = 17
+    for col_num in range(3, 3 + len(colunas_meses)):
+        ws.column_dimensions[get_column_letter(col_num)].width = 15
+
+    # ====== COMEÇAR DADOS DIRETO NA LINHA 1 ======
     row_atual = 1
+
+    thin_border = Border(
+        left=Side(style='thin', color=border_color),
+        right=Side(style='thin', color=border_color),
+        top=Side(style='thin', color=border_color),
+        bottom=Side(style='thin', color=border_color)
+    )
+
+    # ====== CABEÇALHO FIXO DA TABELA (LINHA 1) ======
+    headers = ['Código - Descrição', 'Un.'] + colunas_meses
+    for col_num, header in enumerate(headers, 1):
+        cell = ws.cell(row=row_atual, column=col_num)
+        cell.value = header
+        cell.font = Font(name=font_name, size=font_size_data, bold=True, color=estilos_header_principal['font_color'])
+        cell.fill = PatternFill(start_color=estilos_header_principal['bg_color'], end_color=estilos_header_principal['bg_color'], fill_type='solid')
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        cell.border = thin_border
+    ws.row_dimensions[row_atual].height = 20
+    
+    # Congelar a linha de cabeçalho
+    ws.freeze_panes = 'b2'
+    row_atual += 1
+
+    # Função auxiliar para imprimir tabela de dados (evita repetição de código)
+    def imprimir_tabela_dados(df_dados, row_start, num_cols):
+        current_row = row_start
+        
+        # Dados
+        alternado = False
+        for idx, row in df_dados.iterrows():
+            bg_color = estilos_row_alternado if alternado else estilos_row_normal
+            alternado = not alternado
+            
+            # Coluna 1: Código - Descrição
+            cell = ws.cell(row=current_row, column=1)
+            cell.value = f"{row['codigo_da_informacao_indicador']} - {row['nome_da_informacao_indicador']}"
+            cell.font = Font(name=font_name, size=font_size_data)
+            cell.fill = PatternFill(start_color=bg_color, end_color=bg_color, fill_type='solid')
+            cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+            cell.border = thin_border
+            
+            # Coluna 2: Unidade
+            cell = ws.cell(row=current_row, column=2)
+            cell.value = row['unidade'] if pd.notna(row['unidade']) else '-'
+            cell.font = Font(name=font_name, size=font_size_data)
+            cell.fill = PatternFill(start_color=bg_color, end_color=bg_color, fill_type='solid')
+            cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+            cell.border = thin_border
+            
+            # Colunas de meses
+            for col_num, mes in enumerate(colunas_meses, 3):
+                cell = ws.cell(row=current_row, column=col_num)
+                valor = row[mes]
+                if pd.notna(valor) and str(valor).strip() != "":
+                    try:
+                        cell.value = float(valor)
+                        cell.number_format = '#,##0.00'
+                    except:
+                        cell.value = str(valor)
+                else:
+                    cell.value = "-"
+                cell.font = Font(name=font_name, size=font_size_data)
+                cell.fill = PatternFill(start_color=bg_color, end_color=bg_color, fill_type='solid')
+                cell.alignment = Alignment(horizontal='right', vertical='center')
+                cell.border = thin_border
+            
+            ws.row_dimensions[current_row].height = 18
+            current_row += 1
+            
+        return current_row
+
     modulos_unicos = sort_modulos(df_para_exportar['modulo'].unique().tolist())
     
     for modulo in modulos_unicos:
@@ -383,179 +606,202 @@ def criar_relatorio_excel_generico(df_para_exportar, municipio_selecionado, colu
         cores = get_modulo_color(modulo)
         num_cols = 2 + len(colunas_meses)
         
-        # Cabeçalho Módulo
-        ws.merge_cells(f'A{row_atual}:{chr(64 + num_cols)}{row_atual}')
+        # ====== CABEÇALHO MÓDULO ======
+        ws.merge_cells(f'A{row_atual}:{get_column_letter(num_cols)}{row_atual}')
         cell = ws[f'A{row_atual}']
-        cell.value = modulo
-        cell.font = Font(name='Calibri', size=11, bold=True, color=hex_to_argb('#FFFFFF'))
-        cell.fill = PatternFill(start_color=hex_to_argb(cores['header_color']).lstrip('FF'), 
-                               end_color=hex_to_argb(cores['header_color']).lstrip('FF'), fill_type='solid')
-        cell.alignment = Alignment(horizontal='left', vertical='center')
-        ws.row_dimensions[row_atual].height = 20
+        cell.value = f" ► {str(modulo).upper()}"
+        cell.font = Font(name=font_name, size=estilos_header_principal['font_size'], bold=True, color=estilos_header_principal['font_color'])
+        cell.fill = PatternFill(start_color=cores['header_color'].lstrip('#'), end_color=cores['header_color'].lstrip('#'), fill_type='solid')
+        cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+        ws.row_dimensions[row_atual].height = 22
+        
+        for col in range(1, num_cols + 1):
+            ws.cell(row=row_atual, column=col).border = thin_border
         row_atual += 1
         
-        for formulario in df_modulo['formulario'].unique():
-            df_formulario = df_modulo[df_modulo['formulario'] == formulario]
-            
-            # Cabeçalho Formulário
-            ws.merge_cells(f'A{row_atual}:{chr(64 + num_cols)}{row_atual}')
-            cell = ws[f'A{row_atual}']
-            cell.value = formulario
-            cell.font = Font(name='Calibri', size=11, bold=True, color=hex_to_argb('#FFFFFF'))
-            cell.fill = PatternFill(start_color=hex_to_argb(cores['subheader_color']).lstrip('FF'), 
-                                   end_color=hex_to_argb(cores['subheader_color']).lstrip('FF'), fill_type='solid')
-            cell.alignment = Alignment(horizontal='left', vertical='center')
-            ws.row_dimensions[row_atual].height = 18
-            row_atual += 1
-            
-            for subformulario in df_formulario['subformulario_gruopo'].unique():
-                df_subformulario = df_formulario[df_formulario['subformulario_gruopo'] == subformulario]
+        # ====== VERIFICAÇÃO: INFORMAÇÕES COMPLEMENTARES ======
+        if 'informações complementares' in str(modulo).lower():
+            # Imprime a tabela direto, sem agrupar por formulário/subformulário
+            row_atual = imprimir_tabela_dados(df_modulo, row_atual, num_cols)
+            row_atual += 1 # Espaço extra
+        else:
+            # ====== PROCESSAR FORMULÁRIOS (Água e Esgoto) ======
+            for formulario in df_modulo['formulario'].unique():
+                if pd.isna(formulario): continue
+                df_formulario = df_modulo[df_modulo['formulario'] == formulario]
                 
-                # Cabeçalho Subformulário
-                ws.merge_cells(f'A{row_atual}:{chr(64 + num_cols)}{row_atual}')
+                # Cabeçalho Formulário
+                ws.merge_cells(f'A{row_atual}:{get_column_letter(num_cols)}{row_atual}')
                 cell = ws[f'A{row_atual}']
-                cell.value = subformulario
-                cell.font = Font(name='Calibri', size=11, bold=True, color=hex_to_argb('#1F4788'))
-                cell.fill = PatternFill(start_color=hex_to_argb(cores['subform_color']).lstrip('FF'), 
-                                       end_color=hex_to_argb(cores['subform_color']).lstrip('FF'), fill_type='solid')
+                cell.value = f"  {formulario}"
+                cell.font = Font(name=font_name, size=estilos_header_secundario['font_size'], bold=True, color=estilos_header_secundario['font_color'])
+                cell.fill = PatternFill(start_color=cores['subheader_color'].lstrip('#'), end_color=cores['subheader_color'].lstrip('#'), fill_type='solid')
                 cell.alignment = Alignment(horizontal='left', vertical='center')
-                ws.row_dimensions[row_atual].height = 16
+                ws.row_dimensions[row_atual].height = 18
+                for col in range(1, num_cols + 1):
+                    ws.cell(row=row_atual, column=col).border = thin_border
                 row_atual += 1
                 
-                for subgrupo in df_subformulario['subgrupo_palavra_chave'].unique():
-                    df_subgrupo = df_subformulario[df_subformulario['subgrupo_palavra_chave'] == subgrupo]
+                # ====== PROCESSAR SUBFORMULÁRIOS ======
+                for subformulario in df_formulario['subformulario_grupo'].unique():
+                    if pd.isna(subformulario): continue
+                    df_subformulario = df_formulario[df_formulario['subformulario_grupo'] == subformulario]
                     
-                    # Cabeçalho Subgrupo
-                    ws.merge_cells(f'A{row_atual}:{chr(64 + num_cols)}{row_atual}')
+                    # Cabeçalho Subformulário
+                    ws.merge_cells(f'A{row_atual}:{get_column_letter(num_cols)}{row_atual}')
                     cell = ws[f'A{row_atual}']
-                    cell.value = subgrupo
-                    cell.font = Font(name='Calibri', size=11, bold=True, color=hex_to_argb('#1F4788'))
-                    cell.fill = PatternFill(start_color=hex_to_argb(cores['subgrupo_color']).lstrip('FF'), 
-                                           end_color=hex_to_argb(cores['subgrupo_color']).lstrip('FF'), fill_type='solid')
-                    cell.border = Border(left=Side(style='medium', color=hex_to_argb(cores['border_color']).lstrip('FF')))
+                    cell.value = f"    {subformulario}"
+                    cell.font = Font(name=font_name, size=10, bold=True, color='1F4788')
+                    cell.fill = PatternFill(start_color=cores['subform_color'].lstrip('#'), end_color=cores['subform_color'].lstrip('#'), fill_type='solid')
                     cell.alignment = Alignment(horizontal='left', vertical='center')
                     ws.row_dimensions[row_atual].height = 16
+                    for col in range(1, num_cols + 1):
+                        ws.cell(row=row_atual, column=col).border = thin_border
                     row_atual += 1
                     
-                    # Cabeçalhos tabela
-                    headers = ['Código - Descrição', 'Un.'] + colunas_meses
-                    for col_num, header in enumerate(headers, 1):
-                        cell = ws.cell(row=row_atual, column=col_num)
-                        cell.value = header
-                        cell.font = Font(name='Calibri', size=11, bold=True, color=hex_to_argb("#000000"))
-                        cell.fill = PatternFill(start_color=hex_to_argb("#E1E4E9").lstrip('FF'), 
-                                    end_color=hex_to_argb('#1F4788').lstrip('FF'), fill_type='solid')
-                        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-                        cell.border = Border(
-                            left=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF')),
-                            right=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF')),
-                            top=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF')),
-                            bottom=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF'))
-                        )
-                    ws.row_dimensions[row_atual].height = 20
-                    row_atual += 1
-                    
-                    # Dados
-                    for idx, row in df_subgrupo.iterrows():
-                        ws.cell(row=row_atual, column=1).value = f"{row['codigo_da_informacao_indicador']} - {row['nome_da_informacao_indicador']}"
-                        ws.cell(row=row_atual, column=1).font = Font(name='Calibri', size=11)
-                        ws.cell(row=row_atual, column=2).value = row['unidade']
-                        ws.cell(row=row_atual, column=2).font = Font(name='Calibri', size=11)
+                    # ====== PROCESSAR SUBGRUPOS ======
+                    for subgrupo in df_subformulario['subgrupo_palavra_chave'].unique():
+                        if pd.isna(subgrupo): continue
+                        df_subgrupo = df_subformulario[df_subformulario['subgrupo_palavra_chave'] == subgrupo]
                         
-                        for col_num, mes in enumerate(colunas_meses, 3):
-                            valor = row[mes]
-                            if pd.notna(valor) and valor != "":
-                                try:
-                                    ws.cell(row=row_atual, column=col_num).value = float(valor)
-                                    ws.cell(row=row_atual, column=col_num).number_format = '#,##0.00'
-                                except:
-                                    ws.cell(row=row_atual, column=col_num).value = valor
-                            ws.cell(row=row_atual, column=col_num).font = Font(name='Calibri', size=11)
-                        
-                        for col_num in range(1, len(headers) + 1):
-                            cell = ws.cell(row=row_atual, column=col_num)
-                            cell.border = Border(
-                                left=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF')),
-                                right=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF')),
-                                top=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF')),
-                                bottom=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF'))
-                            )
-                            cell.alignment = Alignment(horizontal='left' if col_num == 1 else 'right', vertical='center', wrap_text=True)
-                        ws.row_dimensions[row_atual].height = 18
+                        # Cabeçalho Subgrupo
+                        ws.merge_cells(f'A{row_atual}:{get_column_letter(num_cols)}{row_atual}')
+                        cell = ws[f'A{row_atual}']
+                        cell.value = f"      {subgrupo}"
+                        cell.font = Font(name=font_name, size=10, bold=True, color='1F4788')
+                        cell.fill = PatternFill(start_color=cores['subgrupo_color'].lstrip('#'), end_color=cores['subgrupo_color'].lstrip('#'), fill_type='solid')
+                        cell.alignment = Alignment(horizontal='left', vertical='center')
+                        ws.row_dimensions[row_atual].height = 15
+                        for col in range(1, num_cols + 1):
+                            ws.cell(row=row_atual, column=col).border = thin_border
                         row_atual += 1
-                    row_atual += 1
-    
-    ws.column_dimensions['A'].width = 131
-    ws.column_dimensions['B'].width = 11
-    for col_num in range(3, 3 + len(colunas_meses)):
-        ws.column_dimensions[chr(64 + col_num)].width = 14
+                        
+                        # Imprimir Tabela de Dados
+                        row_atual = imprimir_tabela_dados(df_subgrupo, row_atual, num_cols)
+                        
+                        # Espaço entre subgrupos
+                        row_atual += 1
     
     return wb
 
 @st.cache_data
-def criar_relatorio_consolidado_excel(df_para_exportar, indicadores_filtrados_tuple):
-    """Cria relatório consolidado em Excel - Calibri 11, cores consistentes - COM CACHE"""
-    # Converter tuple de volta para lista
-    indicadores_filtrados = list(indicadores_filtrados_tuple) if indicadores_filtrados_tuple else []
+def criar_relatorio_consolidado_excel(df_para_exportar, indicadores_filtrados_tuple, coluna_valor='anual', incluir_colunas_vazias=False, largura_anotacao_min=500):
+    """Cria relatório consolidado em Excel com anotações (comentários)
+    
+    Args:
+        df_para_exportar: DataFrame com os dados
+        indicadores_filtrados_tuple: Tuple com indicadores filtrados
+        coluna_valor: Coluna de valor a usar (padrão: 'anual')
+        incluir_colunas_vazias: Se True, inclui colunas vazias
+        largura_anotacao_min: Largura mínima da anotação
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    from openpyxl.comments import Comment
+    
+    # Carregar glossário para anotações
+    df_glossario = load_data()
+    
+    df_indicadores = pd.DataFrame(indicadores_filtrados_tuple)
     
     wb = Workbook()
     ws = wb.active
     ws.title = "Consolidado"
-    df_pivot_data = df_para_exportar[['codigo_ibge_municipio', 'municipio', 'codigo_da_informacao_indicador', 
-                                       'nome_da_informacao_indicador', 'unidade', 'anual']].copy()
-    df_pivot_data = df_pivot_data.drop_duplicates(subset=['codigo_ibge_municipio', 'municipio', 'codigo_da_informacao_indicador'])
-    if len(indicadores_filtrados) > 0:
-        df_pivot_data = df_pivot_data[df_pivot_data['codigo_da_informacao_indicador'].isin(indicadores_filtrados)]
-    codigo_nome_unidade_excel = {}
-    for _, row in df_pivot_data.iterrows():
-        codigo = row['codigo_da_informacao_indicador']
-        codigo_nome_unidade_excel[codigo] = formatar_nome_com_unidade(row['nome_da_informacao_indicador'], row['unidade'])
-    df_pivot_data = df_pivot_data.pivot_table(
+
+    # Estilos
+    header_fill = PatternFill(start_color='0B3040', end_color='0B3040', fill_type='solid')
+    header_font = Font(name='Calibri', size=11, bold=True, color='FFFFFF')
+    data_font = Font(name='Calibri', size=11)
+    thin_border = Border(
+        left=Side(style='thin', color='D0D8E0'),
+        right=Side(style='thin', color='D0D8E0'),
+        top=Side(style='thin', color='D0D8E0'),
+        bottom=Side(style='thin', color='D0D8E0')
+    )
+    
+    # Preparar dados
+    df_pivot = df_para_exportar.pivot_table(
         index=['codigo_ibge_municipio', 'municipio'],
         columns='codigo_da_informacao_indicador',
-        values='anual',
-        aggfunc='first'
+        values=coluna_valor,
+        aggfunc='first',
+        fill_value=None
     ).reset_index()
-    headers = list(df_pivot_data.columns)
     
-    # Cabeçalho linha 1
+    # Filtrar colunas vazias se necessário
+    if not incluir_colunas_vazias:
+        colunas_com_dados = ['codigo_ibge_municipio', 'municipio']
+        for col in df_pivot.columns:
+            if col not in ['codigo_ibge_municipio', 'municipio']:
+                tem_dado = False
+                for val in df_pivot[col]:
+                    if pd.notna(val) and val is not None and str(val).strip() != "" and str(val).strip() != "nan" and str(val).strip() != "None":
+                        tem_dado = True
+                        break
+                if tem_dado:
+                    colunas_com_dados.append(col)
+        df_pivot = df_pivot[colunas_com_dados]
+    
+    headers = list(df_pivot.columns)
+    
+    # Cabeçalhos
     for col_num, header in enumerate(headers, 1):
         cell = ws.cell(row=1, column=col_num)
-        cell.value = "" if col_num <= 2 else codigo_nome_unidade_excel.get(header, "")
-        cell.font = Font(name='Calibri', size=11, bold=True, color=hex_to_argb('#FFFFFF'))
-        cell.fill = PatternFill(start_color=hex_to_argb('#0B3040').lstrip('FF'), 
-                               end_color=hex_to_argb('#0B3040').lstrip('FF'), fill_type='solid')
-        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-        cell.border = Border(
-            left=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF')),
-            right=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF')),
-            top=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF')),
-            bottom=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF'))
-        )
-    ws.row_dimensions[1].height = 25
-    
-    # Cabeçalho linha 2
-    for col_num, header in enumerate(headers, 1):
-        cell = ws.cell(row=2, column=col_num)
         cell.value = header
-        cell.font = Font(name='Calibri', size=11, bold=True, color=hex_to_argb('#FFFFFF'))
-        cell.fill = PatternFill(start_color=hex_to_argb('#0B3040').lstrip('FF'), 
-                               end_color=hex_to_argb('#0B3040').lstrip('FF'), fill_type='solid')
+        cell.font = header_font
+        cell.fill = header_fill
         cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-        cell.border = Border(
-            left=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF')),
-            right=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF')),
-            top=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF')),
-            bottom=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF'))
-        )
-    ws.row_dimensions[2].height = 20
-    ws.freeze_panes = 'C3'
+        cell.border = thin_border
+        
+        # ADICIONAR ANOTAÇÃO NO CABEÇALHO (para colunas de indicadores)
+        if col_num > 2:  # Pula código_ibge_municipio e municipio
+            codigo_info = header
+            row_glossario = df_glossario[df_glossario['Código da informação'] == codigo_info]
+            
+            if not row_glossario.empty:
+                descricao = row_glossario.iloc[0].get('Descrição SINISA', '')
+                formula = row_glossario.iloc[0].get('Fórmula', '')
+                referencia = row_glossario.iloc[0].get('Referência', '')
+                unidade = row_glossario.iloc[0].get('Unidade', '')
+                
+                # Montar texto da anotação
+                texto_anotacao = ""
+                
+                if pd.notna(descricao) and str(descricao).strip() != "":
+                    unidade_texto = f" ({str(unidade).strip()})" if pd.notna(unidade) and str(unidade).strip() != "" else ""
+                    texto_anotacao += f"\n\nDESCRIÇÃO COMPLETA: \n{str(descricao).strip()} {unidade_texto}\n\n"
+                
+                if pd.notna(formula) and str(formula).strip() != "":
+                    texto_anotacao += f"FÓRMULA: {str(formula).strip()}\n\n"
+                
+                if pd.notna(referencia) and str(referencia).strip() != "":
+                    texto_anotacao += f"REFERÊNCIA: \n{str(referencia).strip()}"
+                
+                # Adicionar anotação se houver conteúdo
+                if texto_anotacao.strip():
+                    comment = Comment(texto_anotacao, "Sistema")
+                    
+                    # Calcular dimensões
+                    num_linhas = texto_anotacao.count('\n') + 1
+                    altura_dinamica = max(750, num_linhas * 50)
+                    
+                    linhas = texto_anotacao.split('\n')
+                    linha_mais_longa = max(len(linha) for linha in linhas) if linhas else 0
+                    largura_dinamica = max(largura_anotacao_min, linha_mais_longa)
+                    
+                    comment.width = largura_dinamica
+                    comment.height = altura_dinamica
+                    comment.moveWith = True
+                    
+                    cell.comment = comment
     
     # Dados
-    for row_num, (idx, row) in enumerate(df_pivot_data.iterrows(), 3):
+    for row_num, (idx, row) in enumerate(df_pivot.iterrows(), 2):
         for col_num, col_name in enumerate(headers, 1):
             cell = ws.cell(row=row_num, column=col_num)
             value = row[col_name]
+            
             if col_num == 1:
                 cell.value = value
                 cell.alignment = Alignment(horizontal='center', vertical='center')
@@ -563,49 +809,304 @@ def criar_relatorio_consolidado_excel(df_para_exportar, indicadores_filtrados_tu
                 cell.value = value
                 cell.alignment = Alignment(horizontal='left', vertical='center')
             else:
-                if pd.notna(value) and value != "":
+                if pd.notna(value) and str(value).strip() != "":
                     try:
                         cell.value = float(value)
                         cell.number_format = '#,##0.00'
                     except:
                         cell.value = value
                 cell.alignment = Alignment(horizontal='right', vertical='center')
-            cell.font = Font(name='Calibri', size=11)
-            cell.border = Border(
-                left=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF')),
-                right=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF')),
-                top=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF')),
-                bottom=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF'))
-            )
+            
+            cell.font = data_font
+            cell.border = thin_border
     
+    # Ajustar largura das colunas
     ws.column_dimensions['A'].width = 18
     ws.column_dimensions['B'].width = 35
     for col_num in range(3, len(headers) + 1):
-        ws.column_dimensions[get_col_letter(col_num)].width = 18
+        ws.column_dimensions[get_column_letter(col_num)].width = 18
     
-    # RETORNAR O WORKBOOK, NÃO O BYTESIO
+    # Congelar linhas
+    ws.freeze_panes = 'C2'
+    
     return wb
 
-def criar_tabela_consolidada_html(df_para_tabela, indicadores_filtrados):
+@st.cache_data
+def criar_exportacao_zip_por_formulario(df_sinisa_tuple, coluna_valor='anual', incluir_colunas_vazias=False, posicao_anotacao_linha=3, largura_anotacao_min=500):
+    """Cria ZIP com dados por módulo - Estilo padronizado com o consolidado
+    
+    Args:
+        df_sinisa_tuple: Dados SINISA
+        coluna_valor: Coluna de valor a usar (padrão: 'anual')
+        incluir_colunas_vazias: Se True, inclui colunas vazias (padrão: False)
+        posicao_anotacao_linha: Linha a partir da qual a anotação começa (padrão: 3)
+        largura_anotacao_min: Largura mínima da anotação em caracteres (padrão: 50)
+    """
+    df_sinisa = pd.DataFrame(df_sinisa_tuple)
+    zip_buffer = BytesIO()
+    
+    from openpyxl import Workbook
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    from openpyxl.comments import Comment
+    import zipfile
+    
+    # Carregar glossário para obter Fórmula e Referência
+    df_glossario = load_data()
+    
+    # Estilos baseados no relatório consolidado
+    header_fill = PatternFill(start_color='0B3040', end_color='0B3040', fill_type='solid')
+    header_font = Font(name='Calibri', size=11, bold=True, color='FFFFFF')
+    data_font = Font(name='Calibri', size=11)
+    thin_border = Border(
+        left=Side(style='thin', color='D0D8E0'),
+        right=Side(style='thin', color='D0D8E0'),
+        top=Side(style='thin', color='D0D8E0'),
+        bottom=Side(style='thin', color='D0D8E0')
+    )
+    
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        for modulo in ['Água', 'Esgoto']:
+            df_modulo = df_sinisa[df_sinisa['modulo'] == modulo].copy()
+            if len(df_modulo) == 0:
+                continue
+                
+            for info_tipo in ['Informação', 'Indicador']:
+                df_tipo = df_modulo[df_modulo['informacao_indicador'] == info_tipo].copy()
+                if len(df_tipo) == 0:
+                    continue
+                    
+                wb = Workbook()
+                ws_primeiro = wb.active
+                ws_primeiro.title = "Índice"
+                
+                for grupo in sorted(df_tipo['subformulario_grupo'].dropna().unique().tolist()):
+                    df_grupo = df_tipo[df_tipo['subformulario_grupo'] == grupo]
+                    codigo_nome_unidade = {}
+                    
+                    for _, row in df_grupo.iterrows():
+                        codigo = row['codigo_da_informacao_indicador']
+                        codigo_nome_unidade[codigo] = formatar_nome_com_unidade(row['nome_da_informacao_indicador'], row['unidade'])
+                    
+                    # OBTER LISTA DE TODOS OS INDICADORES DESTE GRUPO (ANTES DO PIVOT)
+                    indicadores_do_grupo = sorted(df_grupo['codigo_da_informacao_indicador'].unique().tolist())
+                        
+                    df_pivot = df_grupo[['codigo_ibge_municipio', 'municipio', 'codigo_da_informacao_indicador', coluna_valor]].copy()
+                    df_pivot = df_pivot.drop_duplicates(subset=['codigo_ibge_municipio', 'municipio', 'codigo_da_informacao_indicador'])
+                    df_pivot = df_pivot.pivot_table(
+                        index=['codigo_ibge_municipio', 'municipio'],
+                        columns='codigo_da_informacao_indicador',
+                        values=coluna_valor,
+                        aggfunc='first',
+                        fill_value=None
+                    ).reset_index()
+                    
+                    # REINSERIR COLUNAS QUE O PIVOT TABLE APAGOU POR ESTAREM VAZIAS
+                    for indicador in indicadores_do_grupo:
+                        if indicador not in df_pivot.columns:
+                            df_pivot[indicador] = None
+                    
+                    # ===== FILTRAR COLUNAS VAZIAS COM VERIFICAÇÃO ROBUSTA =====
+                    if not incluir_colunas_vazias:
+                        colunas_com_dados = ['codigo_ibge_municipio', 'municipio']
+                        for col in df_pivot.columns:
+                            if col not in ['codigo_ibge_municipio', 'municipio']:
+                                tem_dado = False
+                                for val in df_pivot[col]:
+                                    # Verificação robusta contra NaN, None e strings "nan"
+                                    if pd.notna(val) and val is not None and str(val).strip() != "" and str(val).strip() != "nan" and str(val).strip() != "None":
+                                        tem_dado = True
+                                        break
+                                if tem_dado:
+                                    colunas_com_dados.append(col)
+                        df_pivot = df_pivot[colunas_com_dados]
+                    else:
+                        # Se incluir colunas vazias, ordena para ficar na ordem correta
+                        colunas_ordenadas = ['codigo_ibge_municipio', 'municipio'] + [col for col in indicadores_do_grupo if col in df_pivot.columns]
+                        df_pivot = df_pivot[colunas_ordenadas]
+                        
+                    ws = wb.create_sheet(title=str(grupo)[:31])
+                    headers = list(df_pivot.columns)
+                    
+                    # Cabeçalhos
+                    for col_num, header in enumerate(headers, 1):
+                        # Linha 1
+                        cell1 = ws.cell(row=1, column=col_num)
+                        cell1.value = "" if col_num <= 2 else codigo_nome_unidade.get(header, "")
+                        cell1.font = header_font
+                        cell1.fill = header_fill
+                        cell1.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                        cell1.border = thin_border
+                        
+                        # Linha 2
+                        cell2 = ws.cell(row=2, column=col_num)
+                        cell2.value = header
+                        cell2.font = header_font
+                        cell2.fill = header_fill
+                        cell2.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                        cell2.border = thin_border
+                        
+                        # ADICIONAR ANOTAÇÃO NA SEGUNDA LINHA
+                        if col_num == 1:
+                            # Coluna do código - anotação "X"
+                            cell2.comment = Comment("X", "Sistema")
+                        elif col_num > 2:
+                            # Colunas de dados (a partir da 3ª) - buscar Descrição, Fórmula e Referência do glossário
+                            codigo_info = header
+                            
+                            # Buscar no glossário
+                            row_glossario = df_glossario[df_glossario['Código da informação'] == codigo_info]
+                            
+                            if not row_glossario.empty:
+                                descricao = row_glossario.iloc[0].get('Descrição SINISA', '')
+                                formula = row_glossario.iloc[0].get('Fórmula', '')
+                                referencia = row_glossario.iloc[0].get('Referência', '')
+                                unidade = row_glossario.iloc[0].get('Unidade', '')
+                                area_responsavel = row_glossario.iloc[0].get('Área Responsável', '') 
+                                
+                                # Montar texto da anotação com quebras de linha
+                                texto_anotacao = ""
+                                
+                                if pd.notna(descricao) and str(descricao).strip() != "":
+                                    unidade_texto = f" ({str(unidade).strip()})" if pd.notna(unidade) and str(unidade).strip() != "" else ""
+                                    texto_anotacao += f"\n\nDESCRIÇÃO COMPLETA: \n{str(descricao).strip()} {unidade_texto}\n\n"
+                                
+                                if pd.notna(area_responsavel) and str(area_responsavel).strip() != "":
+                                    texto_anotacao += f"Área Responsável: {str(area_responsavel).strip()}\n\n"                                
+                                
+                                if pd.notna(formula) and str(formula).strip() != "":
+                                    texto_anotacao += f"FÓRMULA: {str(formula).strip()}\n\n"
+                                
+                                if pd.notna(referencia) and str(referencia).strip() != "":
+                                    texto_anotacao += f"REFERÊNCIA: \n{str(referencia).strip()}"
+                                
+                                # Adicionar anotação se houver conteúdo
+                                if texto_anotacao.strip():
+                                    comment = Comment(texto_anotacao, "Sistema")
+                                    
+                                    # Calcular altura dinâmica baseada no tamanho do texto
+                                    num_linhas = texto_anotacao.count('\n') + 1
+                                    altura_dinamica = max(750, num_linhas * 50)  # Mínimo 100, 20 pixels por linha
+                                    
+                                    # Calcular largura dinâmica baseada no comprimento da linha mais longa
+                                    linhas = texto_anotacao.split('\n')
+                                    linha_mais_longa = max(len(linha) for linha in linhas) if linhas else 0
+                                    largura_dinamica = max(largura_anotacao_min, linha_mais_longa)
+                                    
+                                    # Aplicar dimensões
+                                    comment.width = largura_dinamica
+                                    comment.height = altura_dinamica
+                                    
+                                    # Posicionar a anotação
+                                    comment.moveWith = True  # Anotação se move com a célula
+                                    
+                                    cell2.comment = comment
+                        
+                    ws.row_dimensions[1].height = 25
+                    ws.row_dimensions[2].height = 20
+                    ws.freeze_panes = 'C3'
+                    
+                    # Dados
+                    for row_num, (idx, row) in enumerate(df_pivot.iterrows(), 3):
+                        for col_num, col_name in enumerate(headers, 1):
+                            cell = ws.cell(row=row_num, column=col_num)
+                            value = row[col_name]
+                            
+                            if col_num == 1:
+                                cell.value = value
+                                cell.alignment = Alignment(horizontal='center', vertical='center')
+                            elif col_num == 2:
+                                cell.value = value
+                                cell.alignment = Alignment(horizontal='left', vertical='center')
+                            else:
+                                if pd.notna(value) and str(value).strip() != "":
+                                    try:
+                                        cell.value = float(value)
+                                        cell.number_format = '#,##0.00'
+                                    except:
+                                        cell.value = value
+                                cell.alignment = Alignment(horizontal='right', vertical='center')
+                            
+                            cell.font = data_font
+                            cell.border = thin_border
+                            
+                    ws.column_dimensions['A'].width = 18
+                    ws.column_dimensions['B'].width = 35
+                    for col_num in range(3, len(headers) + 1):
+                        ws.column_dimensions[get_column_letter(col_num)].width = 18
+                        
+                if len(wb.sheetnames) > 1:
+                    wb.remove(ws_primeiro)
+                
+                modulo_nome = str(modulo).lower().replace(' ', '_')
+                tipo_nome = str(info_tipo).lower().replace(' ', '_')
+                
+                buffer = BytesIO()
+                wb.save(buffer)
+                buffer.seek(0)
+                zip_file.writestr(f'{modulo_nome}_{tipo_nome}.xlsx', buffer.getvalue())
+                
+    zip_buffer.seek(0)
+    return zip_buffer
+
+
+
+
+
+
+def criar_tabela_consolidada_html(df_para_tabela, indicadores_filtrados, coluna_valor='anual', incluir_colunas_vazias=False):
     """Cria tabela HTML consolidada com Município e Indicadores"""
     df_pivot_html = df_para_tabela[['codigo_ibge_municipio', 'municipio', 'codigo_da_informacao_indicador', 
-                                     'nome_da_informacao_indicador', 'unidade', 'anual']].copy()
+                                     'nome_da_informacao_indicador', 'unidade', coluna_valor]].copy()
+        
     df_pivot_html = df_pivot_html.drop_duplicates(subset=['codigo_ibge_municipio', 'municipio', 'codigo_da_informacao_indicador'])
     
+    # 1. Definir quais indicadores DEVEM aparecer
     if len(indicadores_filtrados) > 0:
-        df_pivot_html = df_pivot_html[df_pivot_html['codigo_da_informacao_indicador'].isin(indicadores_filtrados)]
-    
+        indicadores_esperados = list(indicadores_filtrados)
+        df_pivot_html = df_pivot_html[df_pivot_html['codigo_da_informacao_indicador'].isin(indicadores_esperados)]
+    else:
+        # Se não filtrou, espera todos que estão no DataFrame original
+        indicadores_esperados = df_pivot_html['codigo_da_informacao_indicador'].unique().tolist()
+        
+    # Salvar nomes e unidades
     codigo_nome_unidade_html = {}
     for _, row in df_pivot_html.iterrows():
         codigo = row['codigo_da_informacao_indicador']
         codigo_nome_unidade_html[codigo] = formatar_nome_com_unidade(row['nome_da_informacao_indicador'], row['unidade'])
     
+    # 2. Pivot Table (sem dropna=False para evitar erros do Pandas)
     df_pivot_html = df_pivot_html.pivot_table(
         index=['codigo_ibge_municipio', 'municipio'],
         columns='codigo_da_informacao_indicador',
-        values='anual',
-        aggfunc='first'
+        values=coluna_valor,
+        aggfunc='first',
+        fill_value=None
     ).reset_index()
+    
+    # 3. REINSERIR COLUNAS QUE O PIVOT TABLE APAGOU POR ESTAREM VAZIAS
+    for indicador in indicadores_esperados:
+        if indicador not in df_pivot_html.columns:
+            df_pivot_html[indicador] = None
+            
+    # 4. FILTRAR COLUNAS VAZIAS (SE O CHECKBOX ESTIVER DESMARCADO)
+    if not incluir_colunas_vazias:
+        colunas_com_dados = ['codigo_ibge_municipio', 'municipio']
+        for col in df_pivot_html.columns:
+            if col not in ['codigo_ibge_municipio', 'municipio']:
+                tem_dado = False
+                for val in df_pivot_html[col]:
+                    # Verificação robusta contra NaN, None e strings "nan"
+                    if pd.notna(val) and val is not None and str(val).strip() != "" and str(val).strip() != "nan" and str(val).strip() != "None":
+                        tem_dado = True
+                        break
+                if tem_dado:
+                    colunas_com_dados.append(col)
+        df_pivot_html = df_pivot_html[colunas_com_dados]
+    else:
+        # Se incluir colunas vazias, apenas ordena para ficar na ordem correta
+        colunas_ordenadas = ['codigo_ibge_municipio', 'municipio'] + [col for col in indicadores_esperados if col in df_pivot_html.columns]
+        df_pivot_html = df_pivot_html[colunas_ordenadas]
     
     indicadores = [col for col in df_pivot_html.columns if col not in ['codigo_ibge_municipio', 'municipio']]
     
@@ -614,106 +1115,222 @@ def criar_tabela_consolidada_html(df_para_tabela, indicadores_filtrados):
     
     # Cabeçalho linha 1 - Descrição
     html += '<thead><tr style="background-color: #104861; color: white; position: sticky; top: 0; z-index: 2;">'
-    html += '<th style="padding: 0.25rem 0.3rem; text-align: center; border: 1px solid #d0d8e0; min-width: 280px; font-weight: 700; font-size: 0.8rem; white-space: normal; position: sticky; left: 0; z-index: 3; background-color: #104861;">Município</th>'
+    html += '<th style="padding: 0.25rem 0.3rem; text-align: center; border: 1px solid #d0d8e0; min-width: 110px; font-weight: 700; font-size: 0.8rem; white-space: normal; position: sticky; left: 0; z-index: 3; background-color: #104861;">Município</th>'
     
     for indicador in indicadores:
         nome = codigo_nome_unidade_html.get(indicador, "")
         html += f'<th style="padding: 0.25rem 0.3rem; text-align: center; border: 1px solid #d0d8e0; min-width: 110px; font-weight: 600; font-size: 0.85rem; white-space: normal;">{nome}</th>'
-    
+        
     html += '</tr></thead>'
     
     # Cabeçalho linha 2 - Código
     html += '<thead><tr style="background-color: #0B3040; color: white; position: sticky; top: 28px; z-index: 2;">'
-    html += '<th style="padding: 0.25rem 0.3rem; text-align: center; border: 1px solid #d0d8e0; min-width: 280px; font-weight: 700; font-size: 0.8rem; white-space: nowrap; position: sticky; left: 0; z-index: 3; background-color: #0B3040;"></th>'
+    html += '<th style="padding: 0.25rem 0.3rem; text-align: center; border: 1px solid #d0d8e0; min-width: 110px; font-weight: 700; font-size: 0.8rem; white-space: nowrap; position: sticky; left: 0; z-index: 3; background-color: #0B3040;"></th>'
     
     for indicador in indicadores:
         html += f'<th style="padding: 0.25rem 0.3rem; text-align: center; border: 1px solid #d0d8e0; min-width: 110px; font-weight: 600; font-size: 0.85rem; white-space: nowrap;">{indicador}</th>'
-    
+        
     html += '</tr></thead>'
     
     # Corpo da tabela
     html += '<tbody>'
-    
     for idx, row in df_pivot_html.iterrows():
         html += '<tr style="background-color: #ffffff; border-bottom: 1px solid #d0d8e0; height: 16px;">'
-        
         html += f'<td style="padding: 0.2rem 0.3rem; text-align: left; border: 1px solid #d0d8e0; font-weight: 700; font-size: 0.85rem; white-space: nowrap; position: sticky; left: 0; z-index: 1; background-color: #f0f0f0;">{row["municipio"]}</td>'
         
         for indicador in indicadores:
             valor = row[indicador]
-            valor_formatado = formatar_brasileiro(valor)
+            
+            # ===== SIMPLES: SE FOR NaN/None, DEIXA VAZIO. SENÃO, FORMATA =====
+            if pd.isna(valor) or valor is None or str(valor).strip() == "" or str(valor).strip() == "nan" or str(valor).strip() == "None":
+                valor_formatado = ""
+            else:
+                valor_formatado = formatar_brasileiro(valor)
+            
             html += f'<td style="padding: 0.2rem 0.3rem; text-align: right; border: 1px solid #d0d8e0; font-family: \'Calibri\', monospace; font-weight: 500; font-size: 0.85rem; white-space: nowrap;">{valor_formatado}</td>'
-        
+            
         html += '</tr>'
-    
+        
     html += '</tbody></table></div>'
     return html
+
 
 # ============================================================================
 # FUNÇÕES DE EXPORTAÇÃO ZIP
 # ============================================================================
 
 @st.cache_data
-def criar_exportacao_zip_por_modulo(df_sinisa_tuple):
-    """Cria ZIP com dados por módulo - Calibri 11, cores consistentes - COM CACHE"""
-    # Converter tuple de volta para DataFrame (necessário para cache)
-    df_sinisa = pd.DataFrame(df_sinisa_tuple)
+def criar_exportacao_zip_por_area(df_sinisa_tuple, coluna_valor='anual', incluir_colunas_vazias=False, largura_anotacao_min=500):
+    """Cria ZIP com dados por área responsável - Estilo padronizado com o consolidado
     
+    Args:
+        df_sinisa_tuple: Dados SINISA
+        coluna_valor: Coluna de valor a usar (padrão: 'anual')
+        incluir_colunas_vazias: Se True, inclui colunas vazias (padrão: False)
+        largura_anotacao_min: Largura mínima da anotação em caracteres (padrão: 500)
+    """
+    df_sinisa = pd.DataFrame(df_sinisa_tuple)
     zip_buffer = BytesIO()
+    
+    from openpyxl import Workbook
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    from openpyxl.comments import Comment
+    import zipfile
+    
+    # Carregar glossário para obter Fórmula e Referência
+    df_glossario = load_data()
+    
+    # Estilos baseados no relatório consolidado
+    header_fill = PatternFill(start_color='0B3040', end_color='0B3040', fill_type='solid')
+    header_font = Font(name='Calibri', size=11, bold=True, color='FFFFFF')
+    data_font = Font(name='Calibri', size=11)
+    thin_border = Border(
+        left=Side(style='thin', color='D0D8E0'),
+        right=Side(style='thin', color='D0D8E0'),
+        top=Side(style='thin', color='D0D8E0'),
+        bottom=Side(style='thin', color='D0D8E0')
+    )
+    
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-        for modulo in ['Água', 'Esgoto', 'Informações Complementares']:
-            df_modulo = df_sinisa[df_sinisa['modulo'] == modulo].copy()
-            if len(df_modulo) == 0:
+        # MUDANÇA PRINCIPAL: Agrupar por Área Responsável PRIMEIRO
+        areas_responsaveis = sorted(df_sinisa['area_responsavel'].dropna().unique().tolist())
+        
+        for area in areas_responsaveis:
+            df_area = df_sinisa[df_sinisa['area_responsavel'] == area].copy()
+            if len(df_area) == 0:
                 continue
-            for info_tipo in ['Informação', 'Indicador']:
-                df_tipo = df_modulo[df_modulo['informacao_indicador'] == info_tipo].copy()
-                if len(df_tipo) == 0:
+            
+            # Para cada área, criar dois arquivos: um para Água e outro para Esgoto
+            for modulo in ['Água', 'Esgoto']:
+                df_modulo = df_area[df_area['modulo'] == modulo].copy()
+                if len(df_modulo) == 0:
                     continue
+                    
                 wb = Workbook()
                 ws_primeiro = wb.active
                 ws_primeiro.title = "Índice"
-                for grupo in sorted(df_tipo['formulario'].dropna().unique().tolist()):
-                    df_grupo = df_tipo[df_tipo['formulario'] == grupo]
+                
+                for grupo in sorted(df_modulo['subformulario_grupo'].dropna().unique().tolist()):
+                    df_grupo = df_modulo[df_modulo['subformulario_grupo'] == grupo]
                     codigo_nome_unidade = {}
+                    
                     for _, row in df_grupo.iterrows():
                         codigo = row['codigo_da_informacao_indicador']
                         codigo_nome_unidade[codigo] = formatar_nome_com_unidade(row['nome_da_informacao_indicador'], row['unidade'])
-                    df_pivot = df_grupo[['codigo_ibge_municipio', 'municipio', 'codigo_da_informacao_indicador', 'anual']].copy()
+                    
+                    # OBTER LISTA DE TODOS OS INDICADORES DESTE GRUPO (ANTES DO PIVOT)
+                    indicadores_do_grupo = sorted(df_grupo['codigo_da_informacao_indicador'].unique().tolist())
+                        
+                    df_pivot = df_grupo[['codigo_ibge_municipio', 'municipio', 'codigo_da_informacao_indicador', coluna_valor]].copy()
                     df_pivot = df_pivot.drop_duplicates(subset=['codigo_ibge_municipio', 'municipio', 'codigo_da_informacao_indicador'])
                     df_pivot = df_pivot.pivot_table(
                         index=['codigo_ibge_municipio', 'municipio'],
                         columns='codigo_da_informacao_indicador',
-                        values='anual',
-                        aggfunc='first'
+                        values=coluna_valor,
+                        aggfunc='first',
+                        fill_value=None
                     ).reset_index()
-                    ws = wb.create_sheet(title=grupo[:31])
+                    
+                    # REINSERIR COLUNAS QUE O PIVOT TABLE APAGOU POR ESTAREM VAZIAS
+                    for indicador in indicadores_do_grupo:
+                        if indicador not in df_pivot.columns:
+                            df_pivot[indicador] = None
+                    
+                    # ===== FILTRAR COLUNAS VAZIAS COM VERIFICAÇÃO ROBUSTA =====
+                    if not incluir_colunas_vazias:
+                        colunas_com_dados = ['codigo_ibge_municipio', 'municipio']
+                        for col in df_pivot.columns:
+                            if col not in ['codigo_ibge_municipio', 'municipio']:
+                                tem_dado = False
+                                for val in df_pivot[col]:
+                                    if pd.notna(val) and val is not None and str(val).strip() != "" and str(val).strip() != "nan" and str(val).strip() != "None":
+                                        tem_dado = True
+                                        break
+                                if tem_dado:
+                                    colunas_com_dados.append(col)
+                        df_pivot = df_pivot[colunas_com_dados]
+                    else:
+                        colunas_ordenadas = ['codigo_ibge_municipio', 'municipio'] + [col for col in indicadores_do_grupo if col in df_pivot.columns]
+                        df_pivot = df_pivot[colunas_ordenadas]
+                        
+                    ws = wb.create_sheet(title=str(grupo)[:31])
                     headers = list(df_pivot.columns)
+                    
                     # Cabeçalhos
                     for col_num, header in enumerate(headers, 1):
-                        for row_num in [1, 2]:
-                            cell = ws.cell(row=row_num, column=col_num)
-                            if row_num == 1:
-                                cell.value = "" if col_num <= 2 else codigo_nome_unidade.get(header, "")
-                            else:
-                                cell.value = header
-                            cell.font = Font(name='Calibri', size=11, bold=True, color=hex_to_argb('#FFFFFF'))
-                            cell.fill = PatternFill(start_color=hex_to_argb('#2d5aa8' if row_num == 1 else '#1F4788').lstrip('FF'), 
-                                                   end_color=hex_to_argb('#2d5aa8' if row_num == 1 else '#1F4788').lstrip('FF'), fill_type='solid')
-                            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-                            cell.border = Border(
-                                left=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF')),
-                                right=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF')),
-                                top=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF')),
-                                bottom=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF'))
-                            )
+                        # Linha 1
+                        cell1 = ws.cell(row=1, column=col_num)
+                        cell1.value = "" if col_num <= 2 else codigo_nome_unidade.get(header, "")
+                        cell1.font = header_font
+                        cell1.fill = header_fill
+                        cell1.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                        cell1.border = thin_border
+                        
+                        # Linha 2
+                        cell2 = ws.cell(row=2, column=col_num)
+                        cell2.value = header
+                        cell2.font = header_font
+                        cell2.fill = header_fill
+                        cell2.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                        cell2.border = thin_border
+                        
+                        # ADICIONAR ANOTAÇÃO NA SEGUNDA LINHA
+                        if col_num == 1:
+                            cell2.comment = Comment("X", "Sistema")
+                        elif col_num > 2:
+                            codigo_info = header
+                            row_glossario = df_glossario[df_glossario['Código da informação'] == codigo_info]
+                            
+                            if not row_glossario.empty:
+                                descricao = row_glossario.iloc[0].get('Descrição SINISA', '')
+                                formula = row_glossario.iloc[0].get('Fórmula', '')
+                                referencia = row_glossario.iloc[0].get('Referência', '')
+                                unidade = row_glossario.iloc[0].get('Unidade', '')
+                                
+                                # Montar texto da anotação com quebras de linha
+                                texto_anotacao = ""
+                                
+                                if pd.notna(descricao) and str(descricao).strip() != "":
+                                    unidade_texto = f" ({str(unidade).strip()})" if pd.notna(unidade) and str(unidade).strip() != "" else ""
+                                    texto_anotacao += f"\n\nDESCRIÇÃO COMPLETA: \n{str(descricao).strip()} {unidade_texto}\n\n"
+                                
+                                if pd.notna(formula) and str(formula).strip() != "":
+                                    texto_anotacao += f"FÓRMULA: {str(formula).strip()}\n\n"
+                                
+                                if pd.notna(referencia) and str(referencia).strip() != "":
+                                    texto_anotacao += f"REFERÊNCIA: \n{str(referencia).strip()}"
+                                
+                                # Adicionar anotação se houver conteúdo
+                                if texto_anotacao.strip():
+                                    comment = Comment(texto_anotacao, "Sistema")
+                                    
+                                    # Calcular altura dinâmica baseada no tamanho do texto
+                                    num_linhas = texto_anotacao.count('\n') + 1
+                                    altura_dinamica = max(750, num_linhas * 50)
+                                    
+                                    # Calcular largura dinâmica baseada no comprimento da linha mais longa
+                                    linhas = texto_anotacao.split('\n')
+                                    linha_mais_longa = max(len(linha) for linha in linhas) if linhas else 0
+                                    largura_dinamica = max(largura_anotacao_min, linha_mais_longa)
+                                    
+                                    # Aplicar dimensões
+                                    comment.width = largura_dinamica
+                                    comment.height = altura_dinamica
+                                    comment.moveWith = True
+                                    
+                                    cell2.comment = comment
+                        
                     ws.row_dimensions[1].height = 25
                     ws.row_dimensions[2].height = 20
                     ws.freeze_panes = 'C3'
+                    
                     # Dados
                     for row_num, (idx, row) in enumerate(df_pivot.iterrows(), 3):
                         for col_num, col_name in enumerate(headers, 1):
                             cell = ws.cell(row=row_num, column=col_num)
                             value = row[col_name]
+                            
                             if col_num == 1:
                                 cell.value = value
                                 cell.alignment = Alignment(horizontal='center', vertical='center')
@@ -721,132 +1338,203 @@ def criar_exportacao_zip_por_modulo(df_sinisa_tuple):
                                 cell.value = value
                                 cell.alignment = Alignment(horizontal='left', vertical='center')
                             else:
-                                if pd.notna(value) and value != "":
+                                if pd.notna(value) and str(value).strip() != "":
                                     try:
                                         cell.value = float(value)
                                         cell.number_format = '#,##0.00'
                                     except:
                                         cell.value = value
                                 cell.alignment = Alignment(horizontal='right', vertical='center')
-                            cell.font = Font(name='Calibri', size=11)
-                            cell.border = Border(
-                                left=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF')),
-                                right=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF')),
-                                top=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF')),
-                                bottom=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF'))
-                            )
+                            
+                            cell.font = data_font
+                            cell.border = thin_border
+                            
                     ws.column_dimensions['A'].width = 18
                     ws.column_dimensions['B'].width = 35
                     for col_num in range(3, len(headers) + 1):
-                        ws.column_dimensions[get_col_letter(col_num)].width = 18
+                        ws.column_dimensions[get_column_letter(col_num)].width = 18
+                        
                 if len(wb.sheetnames) > 1:
                     wb.remove(ws_primeiro)
-                modulo_nome = modulo.lower().replace(' ', '_')
-                tipo_nome = info_tipo.lower().replace(' ', '_')
+                
+                # Salvar arquivo no ZIP com nome: area_modulo.xlsx
+                area_nome = str(area).lower().replace(' ', '_').replace('/', '_')
+                modulo_nome = str(modulo).lower().replace(' ', '_')
+                
                 buffer = BytesIO()
                 wb.save(buffer)
                 buffer.seek(0)
-                zip_file.writestr(f'{modulo_nome}_{tipo_nome}.xlsx', buffer.getvalue())
+                zip_file.writestr(f'{area_nome}_{modulo_nome}.xlsx', buffer.getvalue())
+                
     zip_buffer.seek(0)
     return zip_buffer
 
-@st.cache_data
-def criar_exportacao_zip_por_area(df_sinisa_tuple):
-    """Cria ZIP com dados por área responsável - Calibri 11, cores consistentes - COM CACHE"""
-    # Converter tuple de volta para DataFrame (necessário para cache)
-    df_sinisa = pd.DataFrame(df_sinisa_tuple)
+
+def criar_zip_relatorios_todos_municipios(df_agems, ano_selecionado, modulo_selecionado, formulario_selecionado, subformulario_selecionado, subgrupo_selecionado, busca_unificada):
+    """Cria ZIP com relatórios Excel para todos os municípios + arquivo Dados_SINISA filtrado"""
+    from zipfile import ZipFile
     
     zip_buffer = BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-        df_informacoes_area = df_sinisa[df_sinisa['informacao_indicador'] == 'Informação'].copy()
-        for area in sorted(df_informacoes_area['area_responsavel'].dropna().unique().tolist()):
-            df_area = df_informacoes_area[df_informacoes_area['area_responsavel'] == area].copy()
-            if len(df_area) == 0:
+    
+    # Aplicar filtros UMA VEZ para todo o dataframe
+    df_filtrado = aplicar_filtros(df_agems, {
+        'modulo': modulo_selecionado,
+        'formulario': formulario_selecionado,
+        'subformulario_grupo': subformulario_selecionado,
+        'subgrupo_palavra_chave': subgrupo_selecionado
+    })
+    
+    # Aplicar busca unificada UMA VEZ
+    if busca_unificada:
+        df_filtrado = df_filtrado[
+            (df_filtrado['codigo_da_informacao_indicador'].str.contains(busca_unificada, case=False, na=False)) |
+            (df_filtrado['nome_da_informacao_indicador'].str.contains(busca_unificada, case=False, na=False))
+        ]
+    
+    # Obter colunas de meses UMA VEZ
+    todas_colunas_meses = sorted([col for col in df_filtrado.columns if '/' in col and len(col) == 7])
+    colunas_meses = [mes for mes in todas_colunas_meses if len(df_filtrado[mes].dropna()) > 0]
+    
+    if len(colunas_meses) == 0:
+        return zip_buffer
+    
+    # Obter lista de municípios que têm dados após filtros
+    municipios = sorted(df_filtrado['municipio'].dropna().unique().tolist())
+    
+    with ZipFile(zip_buffer, 'w', compression=8) as zip_file:
+        # ===== GERAR RELATÓRIOS EXCEL PARA CADA MUNICÍPIO =====
+        for municipio in municipios:
+            try:
+                df_municipio = df_filtrado[df_filtrado['municipio'] == municipio].copy()
+                
+                if len(df_municipio) > 0:
+                    wb = criar_relatorio_excel_generico(df_municipio, municipio, colunas_meses)
+                    buffer = BytesIO()
+                    wb.save(buffer)
+                    buffer.seek(0)
+                    
+                    nome_arquivo = f"RelGer {municipio.replace(' ', '_')}_{ano_selecionado}.xlsx"
+                    zip_file.writestr(nome_arquivo, buffer.getvalue())
+            except Exception as e:
                 continue
-            wb = Workbook()
-            ws_primeiro = wb.active
-            ws_primeiro.title = "Índice"
-            for subform in sorted(df_area['subformulario_gruopo'].dropna().unique().tolist()):
-                df_subform = df_area[df_area['subformulario_gruopo'] == subform]
-                codigo_nome_unidade = {}
-                for _, row in df_subform.iterrows():
-                    codigo = row['codigo_da_informacao_indicador']
-                    codigo_nome_unidade[codigo] = formatar_nome_com_unidade(row['nome_da_informacao_indicador'], row['unidade'])
-                df_pivot = df_subform[['codigo_ibge_municipio', 'municipio', 'codigo_da_informacao_indicador', 'anual']].copy()
-                df_pivot = df_pivot.drop_duplicates(subset=['codigo_ibge_municipio', 'municipio', 'codigo_da_informacao_indicador'])
-                df_pivot = df_pivot.pivot_table(
-                    index=['codigo_ibge_municipio', 'municipio'],
-                    columns='codigo_da_informacao_indicador',
-                    values='anual',
-                    aggfunc='first'
-                ).reset_index()
-                ws = wb.create_sheet(title=subform[:31])
-                headers = list(df_pivot.columns)
-                # Cabeçalhos
-                for col_num, header in enumerate(headers, 1):
-                    for row_num in [1, 2]:
-                        cell = ws.cell(row=row_num, column=col_num)
-                        if row_num == 1:
-                            cell.value = "" if col_num <= 2 else codigo_nome_unidade.get(header, "")
-                        else:
-                            cell.value = header
-                        cell.font = Font(name='Calibri', size=11, bold=True, color=hex_to_argb('#FFFFFF'))
-                        cell.fill = PatternFill(start_color=hex_to_argb('#2d5aa8' if row_num == 1 else '#1F4788').lstrip('FF'), 
-                                               end_color=hex_to_argb('#2d5aa8' if row_num == 1 else '#1F4788').lstrip('FF'), fill_type='solid')
-                        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-                        cell.border = Border(
-                            left=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF')),
-                            right=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF')),
-                            top=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF')),
-                            bottom=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF'))
-                        )
-                ws.row_dimensions[1].height = 25
-                ws.row_dimensions[2].height = 20
-                ws.freeze_panes = 'C3'
-                # Dados
-                for row_num, (idx, row) in enumerate(df_pivot.iterrows(), 3):
-                    for col_num, col_name in enumerate(headers, 1):
-                        cell = ws.cell(row=row_num, column=col_num)
-                        value = row[col_name]
-                        if col_num == 1:
-                            cell.value = value
-                            cell.alignment = Alignment(horizontal='center', vertical='center')
-                        elif col_num == 2:
-                            cell.value = value
-                            cell.alignment = Alignment(horizontal='left', vertical='center')
-                        else:
-                            if pd.notna(value) and value != "":
-                                try:
-                                    cell.value = float(value)
-                                    cell.number_format = '#,##0.00'
-                                except:
-                                    cell.value = value
-                            cell.alignment = Alignment(horizontal='right', vertical='center')
-                        cell.font = Font(name='Calibri', size=11)
-                        cell.border = Border(
-                            left=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF')),
-                            right=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF')),
-                            top=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF')),
-                            bottom=Side(style='thin', color=hex_to_argb('#D0D8E0').lstrip('FF'))
-                        )
-                ws.column_dimensions['A'].width = 18
-                ws.column_dimensions['B'].width = 35
-                for col_num in range(3, len(headers) + 1):
-                    ws.column_dimensions[get_col_letter(col_num)].width = 18
-            if len(wb.sheetnames) > 1:
-                wb.remove(ws_primeiro)
-            area_nome = area.lower().replace(' ', '_').replace('/', '_')
-            buffer = BytesIO()
-            wb.save(buffer)
-            buffer.seek(0)
-            zip_file.writestr(f'{area_nome}.xlsx', buffer.getvalue())
+        
+        # =====         # ===== ADICIONAR ARQUIVO DADOS_SINISA FILTRADO (OTIMIZADO) =====
+        try:
+            file_path = os.path.join(DATA_DIR, "Dados_SINISA.xlsx")
+            
+            # Ler a aba correspondente ao ano selecionado
+            df_dados_sinisa = pd.read_excel(file_path, sheet_name=str(ano_selecionado))
+            df_dados_sinisa.columns = df_dados_sinisa.columns.str.strip()
+            
+            # Colunas a remover
+            colunas_remover = [
+                'Área Responsável',
+                'Acumulado em 12 meses',
+                'Média em 12 meses',
+                'Relatório Gerencial - AGEMS'
+            ]
+            
+            # Remover colunas que existem
+            colunas_existentes = [col for col in colunas_remover if col in df_dados_sinisa.columns]
+            df_dados_sinisa = df_dados_sinisa.drop(columns=colunas_existentes)
+            
+            # OTIMIZAÇÃO: Usar pandas.to_excel em vez de iterar célula por célula
+            buffer_dados = BytesIO()
+            
+            # Usar o ExcelWriter do pandas (muito mais rápido)
+            with pd.ExcelWriter(buffer_dados, engine='openpyxl') as writer:
+                df_dados_sinisa.to_excel(writer, sheet_name=f"Dados_{ano_selecionado}", index=False)
+                
+                # Aplicar estilo apenas ao cabeçalho para manter a performance alta
+                workbook = writer.book
+                worksheet = writer.sheets[f"Dados_{ano_selecionado}"]
+                
+                from openpyxl.styles import PatternFill, Font
+                from openpyxl.utils import get_column_letter
+                
+                header_fill = PatternFill(start_color='0B3040', end_color='0B3040', fill_type='solid')
+                header_font = Font(name='Calibri', size=11, bold=True, color='FFFFFF')
+                
+                # Estilizar apenas a primeira linha (cabeçalho)
+                for cell in worksheet[1]:
+                    cell.fill = header_fill
+                    cell.font = header_font
+                    
+                # Ajustar largura das colunas de forma rápida
+                for col_num in range(1, len(df_dados_sinisa.columns) + 1):
+                    worksheet.column_dimensions[get_column_letter(col_num)].width = 20
+
+            buffer_dados.seek(0)
+            
+            # Adicionar ao ZIP
+            nome_arquivo_dados = f"Dados_SINISA_{ano_selecionado}.xlsx"
+            zip_file.writestr(nome_arquivo_dados, buffer_dados.getvalue())
+            
+        except Exception as e:
+            # Se houver erro ao adicionar Dados_SINISA, continua mesmo assim
+            pass
+    
     zip_buffer.seek(0)
     return zip_buffer
 
 # ============================================================================
 # FUNÇÕES DE PÁGINAS
 # ============================================================================
+# Cache global para armazenar ZIP gerado
+_zip_cache = {}
 
+@st.cache_data(ttl=3600)
+def gerar_zip_background(df_agems_tuple, ano_selecionado, modulo_selecionado, formulario_selecionado, subformulario_selecionado, subgrupo_selecionado, busca_unificada):
+    """Gera ZIP em background e armazena em cache"""
+    # Converter tuple de volta para DataFrame
+    df_agems = pd.DataFrame(df_agems_tuple)
+    
+    zip_buffer = BytesIO()
+    
+    # Aplicar filtros UMA VEZ para todo o dataframe
+    df_filtrado = aplicar_filtros(df_agems, {
+        'modulo': modulo_selecionado,
+        'formulario': formulario_selecionado,
+        'subformulario_grupo': subformulario_selecionado,
+        'subgrupo_palavra_chave': subgrupo_selecionado
+    })
+    
+    # Aplicar busca unificada UMA VEZ
+    if busca_unificada:
+        df_filtrado = df_filtrado[
+            (df_filtrado['codigo_da_informacao_indicador'].str.contains(busca_unificada, case=False, na=False)) |
+            (df_filtrado['nome_da_informacao_indicador'].str.contains(busca_unificada, case=False, na=False))
+        ]
+    
+    # Obter colunas de meses UMA VEZ
+    todas_colunas_meses = sorted([col for col in df_filtrado.columns if '/' in col and len(col) == 7])
+    colunas_meses = [mes for mes in todas_colunas_meses if len(df_filtrado[mes].dropna()) > 0]
+    
+    if len(colunas_meses) == 0:
+        return zip_buffer
+    
+    # Obter lista de municípios que têm dados após filtros
+    municipios = sorted(df_filtrado['municipio'].dropna().unique().tolist())
+    
+    from zipfile import ZipFile
+    with ZipFile(zip_buffer, 'w', compression=8) as zip_file:
+        for municipio in municipios:
+            try:
+                df_municipio = df_filtrado[df_filtrado['municipio'] == municipio].copy()
+                
+                if len(df_municipio) > 0:
+                    wb = criar_relatorio_excel_generico(df_municipio, municipio, colunas_meses)
+                    buffer = BytesIO()
+                    wb.save(buffer)
+                    buffer.seek(0)
+                    
+                    nome_arquivo = f"relatorio_{municipio.replace(' ', '_')}_{ano_selecionado}.xlsx"
+                    zip_file.writestr(nome_arquivo, buffer.getvalue())
+            except Exception as e:
+                continue
+    
+    zip_buffer.seek(0)
+    return zip_buffer
 # ============================================================================
 # FUNÇÃO DE EXIBIÇÃO DE DETALHES EM POPUP MODAL (st.dialog)
 # ============================================================================
@@ -1112,6 +1800,196 @@ def exibir_detalhes_modal(row, idx):
         </div>
         """, unsafe_allow_html=True)
 
+# ============================================================================
+# FUNÇÃO NOVA - FORMATAR EXCEL DO GLOSSÁRIO COM ESTÉTICA DASHBOARD (DESCRIÇÃO SINISA POR ÚLTIMO)
+# ============================================================================
+def criar_excel_glossario_formatado(df_filtrado):
+    """
+    Cria Excel formatado para o Glossário de Informações com estética do dashboard
+    - Cabeçalhos com cores do dashboard
+    - Linhas alternadas
+    - Bordas e espaçamento otimizados
+    - Colunas: Módulo, Formulário, Subformulário, Subgrupo, Área Responsável, 
+      Código da informação, Nome da informação, Unidade, Descrição SINISA, 
+      Fonte, Fórmula, Referência, Operação
+    """
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Glossário"
+    
+    # Definir largura das colunas - NOVA ORDEM
+    ws.column_dimensions['A'].width = 9  # Módulo
+    ws.column_dimensions['B'].width = 12 # Formulário
+    ws.column_dimensions['C'].width = 20  # Subformulário
+    ws.column_dimensions['D'].width = 15  # Subgrupo
+    ws.column_dimensions['E'].width = 18  # Área Responsável
+    ws.column_dimensions['F'].width = 14  # Código da informação
+    ws.column_dimensions['G'].width = 30  # Nome da informação
+    ws.column_dimensions['H'].width = 12  # Unidade
+    ws.column_dimensions['I'].width = 50  # Descrição SINISA
+    ws.column_dimensions['J'].width = 18  # Fonte
+    ws.column_dimensions['K'].width = 20  # Fórmula
+    ws.column_dimensions['L'].width = 18  # Referência
+    ws.column_dimensions['M'].width = 14  # Operação
+    
+    # Definir altura do cabeçalho
+    ws.row_dimensions[1].height = 20
+    
+    # Estilos
+    header_fill = PatternFill(
+        start_color='0B3040',
+        end_color='0B3040',
+        fill_type='solid'
+    )
+    header_font = Font(name='Calibri', size=11, bold=True, color='FFFFFF')
+    
+    row_alternado_fill = PatternFill(
+        start_color='F5F7FA',
+        end_color='F5F7FA',
+        fill_type='solid'
+    )
+    row_normal_fill = PatternFill(
+        start_color='FFFFFF',
+        end_color='FFFFFF',
+        fill_type='solid'
+    )
+    
+    border = Border(
+        left=Side(style='thin', color='D0D8E0'),
+        right=Side(style='thin', color='D0D8E0'),
+        top=Side(style='thin', color='D0D8E0'),
+        bottom=Side(style='thin', color='D0D8E0')
+    )
+    
+    data_font = Font(name='Calibri', size=10)
+    
+    # Cabeçalhos - NOVA ORDEM
+    headers = ['Módulo', 'Formulário', 'Subformulário', 'Subgrupo', 'Área Responsável', 'Código da informação', 'Nome da informação', 'Unidade', 'Descrição SINISA', 'Fonte', 'Fórmula', 'Referência', 'Operação']
+    for col_num, header in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col_num)
+        cell.value = header
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        cell.border = border
+    
+    # Dados com linhas alternadas - NOVA ORDEM
+    alternado = False
+    for row_num, (idx, row) in enumerate(df_filtrado.iterrows(), 2):
+        # Alternar cores
+        bg_fill = row_alternado_fill if alternado else row_normal_fill
+        alternado = not alternado
+        
+        # Coluna A: Módulo
+        cell = ws.cell(row=row_num, column=1)
+        cell.value = row['Módulo'] if pd.notna(row['Módulo']) else '-'
+        cell.font = data_font
+        cell.fill = bg_fill
+        cell.alignment = Alignment(horizontal='left', vertical='center')
+        cell.border = border
+        
+        # Coluna B: Formulário
+        cell = ws.cell(row=row_num, column=2)
+        cell.value = row['Formulário'] if pd.notna(row['Formulário']) else '-'
+        cell.font = data_font
+        cell.fill = bg_fill
+        cell.alignment = Alignment(horizontal='left', vertical='center')
+        cell.border = border
+        
+        # Coluna C: Subformulário
+        cell = ws.cell(row=row_num, column=3)
+        cell.value = row['Subformulário'] if pd.notna(row['Subformulário']) else '-'
+        cell.font = data_font
+        cell.fill = bg_fill
+        cell.alignment = Alignment(horizontal='left', vertical='center')
+        cell.border = border
+        
+        # Coluna D: Subgrupo
+        cell = ws.cell(row=row_num, column=4)
+        cell.value = row['Subgrupo'] if pd.notna(row['Subgrupo']) else '-'
+        cell.font = data_font
+        cell.fill = bg_fill
+        cell.alignment = Alignment(horizontal='left', vertical='center')
+        cell.border = border
+        
+        # Coluna E: Área Responsável
+        cell = ws.cell(row=row_num, column=5)
+        cell.value = row['Área Responsável'] if pd.notna(row['Área Responsável']) else '-'
+        cell.font = data_font
+        cell.fill = bg_fill
+        cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+        cell.border = border
+        
+        # Coluna F: Código da informação
+        cell = ws.cell(row=row_num, column=6)
+        cell.value = row['Código da informação'] if pd.notna(row['Código da informação']) else '-'
+        cell.font = data_font
+        cell.fill = bg_fill
+        cell.alignment = Alignment(horizontal='left', vertical='center')
+        cell.border = border
+        
+        # Coluna G: Nome da informação
+        cell = ws.cell(row=row_num, column=7)
+        cell.value = row['Nome da informação'] if pd.notna(row['Nome da informação']) else '-'
+        cell.font = data_font
+        cell.fill = bg_fill
+        cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+        cell.border = border
+        
+        # Coluna H: Unidade
+        cell = ws.cell(row=row_num, column=8)
+        cell.value = row['Unidade'] if pd.notna(row['Unidade']) else '-'
+        cell.font = data_font
+        cell.fill = bg_fill
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+        cell.border = border
+        
+        # Coluna I: Descrição SINISA
+        cell = ws.cell(row=row_num, column=9)
+        cell.value = row['Descrição SINISA'] if pd.notna(row['Descrição SINISA']) else '-'
+        cell.font = data_font
+        cell.fill = bg_fill
+        cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+        cell.border = border
+        
+        # Coluna J: Fonte
+        cell = ws.cell(row=row_num, column=10)
+        cell.value = row['Fonte'] if pd.notna(row['Fonte']) else '-'
+        cell.font = data_font
+        cell.fill = bg_fill
+        cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+        cell.border = border
+        
+        # Coluna K: Fórmula
+        cell = ws.cell(row=row_num, column=11)
+        cell.value = row['Fórmula'] if pd.notna(row['Fórmula']) else '-'
+        cell.font = data_font
+        cell.fill = bg_fill
+        cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+        cell.border = border
+        
+        # Coluna L: Referência
+        cell = ws.cell(row=row_num, column=12)
+        cell.value = row['Referência'] if pd.notna(row['Referência']) else '-'
+        cell.font = data_font
+        cell.fill = bg_fill
+        cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+        cell.border = border
+        
+        # Coluna M: Operação
+        cell = ws.cell(row=row_num, column=13)
+        cell.value = row['Operação'] if pd.notna(row['Operação']) else '-'
+        cell.font = data_font
+        cell.fill = bg_fill
+        cell.alignment = Alignment(horizontal='left', vertical='center')
+        cell.border = border
+        
+        ws.row_dimensions[row_num].height = 25
+    
+    return wb
 
 def pagina_sobre():
     """Página Sobre"""
@@ -1138,15 +2016,14 @@ def pagina_sobre():
     - [Documentação](https://www.gov.br/cidades/pt-br/acesso-a-informacao/acoes-e-programas/saneamento/sinisa/sinisa-1)
     """)
 
-def pagina_glossario_informacoes():
-    """Página Glossário - Informações"""
+def pagina_glossario_informacoes_com_stats():
+    """Página Glossário - Informações com Estatísticas - VERSÃO REFATORADA"""
     st.markdown("""
     <div class="header-container">
         <h1 class="header-title">📚 SINISA</h1>
         <p class="header-subtitle">Sistema Nacional de Informações sobre Saneamento</p>
     </div>
     """, unsafe_allow_html=True)
-    
     st.markdown("### 📋 Glossário - Informações")
     
     # Inicializar session state
@@ -1160,10 +2037,13 @@ def pagina_glossario_informacoes():
         st.session_state.subgrupo_filter = "Todos"
     if "area_filter" not in st.session_state:
         st.session_state.area_filter = "Todos"
-    if "search_codigo" not in st.session_state:
-        st.session_state.search_codigo = ""
-    if "search_descricao" not in st.session_state:
-        st.session_state.search_descricao = ""
+    # NOVO: Session state para campos de busca refatorados
+    if "search_codigo_informacao" not in st.session_state:
+        st.session_state.search_codigo_informacao = ""
+    if "search_descricao_sinisa" not in st.session_state:
+        st.session_state.search_descricao_sinisa = ""
+    if "show_stats" not in st.session_state:
+        st.session_state.show_stats = False
     
     # Funções de filtro
     @st.cache_data
@@ -1185,8 +2065,7 @@ def pagina_glossario_informacoes():
         return ["Todos"] + sorted(df_temp[coluna].dropna().unique().tolist())
     
     # Linha 1 - Filtros
-    col1, col2, col3, col4, col5, col6 = st.columns([1.5, 1.5, 1.5, 1.5, 1.5, 1])
-    
+    col1, col2, col3, col4, col5, col6 = st.columns([1.5, 1.5, 1.5, 1.5, 1.5, 1], gap="small")
     with col6:
         st.markdown("<div style='padding-top: 12px;'></div>", unsafe_allow_html=True)
         if st.button("🔄 Limpar Filtros", key="btn_clear_filters", use_container_width=True):
@@ -1195,39 +2074,47 @@ def pagina_glossario_informacoes():
             st.session_state.subformulario_filter = "Todos"
             st.session_state.subgrupo_filter = "Todos"
             st.session_state.area_filter = "Todos"
-            st.session_state.search_codigo = ""
-            st.session_state.search_descricao = ""
+            st.session_state.search_codigo_informacao = ""  # NOVO
+            st.session_state.search_descricao_sinisa = ""   # NOVO
             st.rerun()
     
     with col1:
         modulo_selecionado = st.selectbox("Módulo", get_modulos(), key="modulo_filter", index=0)
-    
     with col2:
         formulario_selecionado = st.selectbox("Formulário", 
             get_filtro_glossario('Formulário', modulo_selecionado), key="formulario_filter", index=0)
-    
     with col3:
         subformulario_selecionado = st.selectbox("Subformulário", 
             get_filtro_glossario('Subformulário', modulo_selecionado, formulario_selecionado), 
             key="subformulario_filter", index=0)
-    
     with col4:
         subgrupo_selecionado = st.selectbox("Subgrupo", 
             get_filtro_glossario('Subgrupo', modulo_selecionado, formulario_selecionado, subformulario_selecionado), 
             key="subgrupo_filter", index=0)
-    
     with col5:
         area_selecionada = st.selectbox("Área Responsável", 
             get_filtro_glossario('Área Responsável', modulo_selecionado, formulario_selecionado, 
                                 subformulario_selecionado, subgrupo_selecionado), 
             key="area_filter", index=0)
     
-    # Linha 2 - Buscas
-    col_codigo, col_descricao = st.columns([1.5, 4.5])
-    with col_codigo:
-        busca_codigo = st.text_input("🔎 Buscar por Código", key="search_codigo")
-    with col_descricao:
-        busca_descricao = st.text_input("🔎 Buscar por Descrição", key="search_descricao")
+    # ========================================================================
+    # LINHA 2 - BUSCAS REFATORADAS (ALTERAÇÃO PRINCIPAL)
+    # ========================================================================
+    col_codigo_info, col_descricao_sinisa = st.columns([2.1, 3.9], gap="small")
+    
+    with col_codigo_info:
+        busca_codigo_informacao = st.text_input(
+            "🔎 Buscar por Código/Informação",
+            key="search_codigo_informacao",
+            placeholder="Digite código ou nome da informação"
+        )
+    
+    with col_descricao_sinisa:
+        busca_descricao_sinisa = st.text_input(
+            "🔎 Buscar por Palavras-Chaves (Pesquisa Ampla)",
+            key="search_descricao_sinisa",
+            placeholder="Digite a descrição SINISA"
+        )
     
     # Aplicar filtros
     df_filtrado = aplicar_filtros(df, {
@@ -1238,113 +2125,153 @@ def pagina_glossario_informacoes():
         'Área Responsável': area_selecionada
     })
     
-    if busca_codigo:
-        df_filtrado = df_filtrado[df_filtrado['Código da informação'].str.contains(busca_codigo, case=False, na=False)]
-    if busca_descricao:
-        df_filtrado = df_filtrado[df_filtrado['Nome da informação'].str.contains(busca_descricao, case=False, na=False)]
+    # ========================================================================
+    # LÓGICA DE BUSCA REFATORADA - ALTERAÇÃO 1: Código/Informação Unificada
+    # ========================================================================
+    if busca_codigo_informacao.strip():  # Tratamento de entrada vazia
+        try:
+            # Busca case-insensitive em CÓDIGO ou NOME DA INFORMAÇÃO
+            termo_busca = busca_codigo_informacao.strip().lower()
+            df_filtrado = df_filtrado[
+                (df_filtrado['Código da informação'].astype(str).str.lower().str.contains(termo_busca, na=False)) |
+                (df_filtrado['Nome da informação'].astype(str).str.lower().str.contains(termo_busca, na=False))
+            ]
+        except Exception as e:
+            st.warning(f"⚠️ Erro ao processar busca de Código/Informação: {str(e)}")
     
-    # Função de exibição de detalhes
-    def exibir_detalhes_modal(row, idx):
-        """Exibe detalhes em modal"""
+    # ========================================================================
+    # LÓGICA DE BUSCA REFATORADA - ALTERAÇÃO 2: Descrição SINISA Específica
+    # ========================================================================
+    if busca_descricao_sinisa.strip():  # Tratamento de entrada vazia
+        try:
+            # Busca case-insensitive especificamente na coluna "Descrição SINISA"
+            termo_busca = busca_descricao_sinisa.strip().lower()
+            df_filtrado = df_filtrado[
+                df_filtrado['Descrição SINISA'].astype(str).str.lower().str.contains(termo_busca, na=False)
+            ]
+        except Exception as e:
+            st.warning(f"⚠️ Erro ao processar busca de Descrição SINISA: {str(e)}")
+    
+    # Função de exibição de estatísticas modal
+    def exibir_estatisticas_modal(df_filtrado):
+        """Exibe estatísticas dos dados filtrados"""
         st.markdown(f"""
-        <div class="modal-container">
-            <h3 style="color: #1f4788; margin-top: 0; margin-bottom: 1rem;">
-                {row['Código da informação']} - {row['Nome da informação']}
-            </h3>
+        <div class="detail-section">
+            <h3 style="color: #1f4788; margin-top: 0; margin-bottom: 1rem;">📊 Análise dos Dados</h3>
         </div>
         """, unsafe_allow_html=True)
-        
-        col1, col2 = st.columns(2)
-        
+        col1, col2, col3, col4 = st.columns(4, gap="small")
         with col1:
             st.markdown(f"""
-            <div class="detail-label">Módulo</div>
-            <div class="detail-value">{row['Módulo']}</div>
-            <div class="detail-label">Área Responsável</div>
-            <div class="detail-value">{row['Área Responsável'] if pd.notna(row['Área Responsável']) else 'N/A'}</div>
-            <div class="detail-label">Unidade</div>
-            <div class="detail-value">{row['Unidade'] if pd.notna(row['Unidade']) else 'N/A'}</div>
+            <div class="metric-card">
+                <div class="metric-label">📋 Total</div>
+                <div class="metric-value">{len(df_filtrado)}</div>
+            </div>
             """, unsafe_allow_html=True)
-        
         with col2:
             st.markdown(f"""
-            <div class="detail-label">Formulário</div>
-            <div class="detail-value">{row['Formulário']}</div>
-            <div class="detail-label">Subformulário</div>
-            <div class="detail-value">{row['Subformulário'] if pd.notna(row['Subformulário']) else 'N/A'}</div>
-            <div class="detail-label">Subgrupo</div>
-            <div class="detail-value">{row['Subgrupo'] if pd.notna(row['Subgrupo']) else 'N/A'}</div>
+            <div class="metric-card">
+                <div class="metric-label">📦 Módulos</div>
+                <div class="metric-value">{df_filtrado['Módulo'].nunique()}</div>
+            </div>
             """, unsafe_allow_html=True)
-        
-        if pd.notna(row['Descrição SINISA']):
+        with col3:
             st.markdown(f"""
-            <div class="detail-label">Descrição</div>
-            <div class="detail-value">{row['Descrição SINISA']}</div>
+            <div class="metric-card">
+                <div class="metric-label">📝 Formulários</div>
+                <div class="metric-value">{df_filtrado['Formulário'].nunique()}</div>
+            </div>
             """, unsafe_allow_html=True)
-        
-        if pd.notna(row['Fórmula']):
+        with col4:
             st.markdown(f"""
-            <div class="detail-label">Fórmula</div>
-            <div class="detail-value" style="background: #c0d9f0; padding: 0.5rem; border-radius: 4px; font-family: monospace;">
-                {row['Fórmula']}
+            <div class="metric-card">
+                <div class="metric-label">🏷️ Subgrupos</div>
+                <div class="metric-value">{df_filtrado['Subgrupo'].nunique() if 'Subgrupo' in df_filtrado.columns else 0}</div>
             </div>
             """, unsafe_allow_html=True)
         
-        if pd.notna(row['Referência']):
-            referencia_formatada = row['Referência'].replace(', ', '\n').lstrip()
-            st.markdown(f"""
-            <div class="detail-label">Informações</div>
-            <div style="background: #c0d9f0; padding: 0.5rem; border-radius: 4px; border-bottom: 1px solid #c0d9f0; color: #333; font-size: 0.95rem; line-height: 1.5; white-space: pre-line; margin: 0;">
-            {referencia_formatada}</div>
-            """, unsafe_allow_html=True)
-        
-        if pd.notna(row['Fonte']):
-            st.markdown(f"""
-            <div class="detail-label">Fonte</div>
-            <div class="detail-value">{row['Fonte']}</div>
-            """, unsafe_allow_html=True)
-        
-        if pd.notna(row['Observação']):
-            st.markdown(f"""
-            <div class="detail-label">Observação</div>
-            <div class="detail-value">{row['Observação']}</div>
-            """, unsafe_allow_html=True)
-        
+        # Gráficos
+        col1, col2, col3, col4 = st.columns(4, gap="small")
+        with col1:
+            if len(df_filtrado) > 0:
+                modulo_count = df_filtrado['Módulo'].value_counts().head(6)
+                fig = go.Figure(data=[go.Bar(x=modulo_count.values, y=modulo_count.index, orientation='h', 
+                    marker=dict(color=modulo_count.values, colorscale='Blues', line=dict(color='#1f4788', width=1)), 
+                    text=modulo_count.values, textposition='auto', hovertemplate='<b>%{y}</b><br>%{x}<extra></extra>')])
+                fig.update_layout(height=250, margin=dict(l=100, r=10, t=10, b=10), plot_bgcolor='rgba(245, 247, 250, 0.5)', 
+                    paper_bgcolor='rgba(255, 255, 255, 0)', xaxis=dict(showgrid=True, gridwidth=1, gridcolor='#e0e0e0', showticklabels=False), 
+                    yaxis=dict(showgrid=False), font=dict(family='Segoe UI', size=9, color='#333'), hovermode='closest', showlegend=False)
+                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+        with col2:
+            if len(df_filtrado) > 0:
+                formulario_count = df_filtrado['Formulário'].value_counts().head(6)
+                fig = go.Figure(data=[go.Bar(x=formulario_count.values, y=formulario_count.index, orientation='h', 
+                    marker=dict(color=formulario_count.values, colorscale='Greens', line=dict(color='#2d5aa8', width=1)), 
+                    text=formulario_count.values, textposition='auto', hovertemplate='<b>%{y}</b><br>%{x}<extra></extra>')])
+                fig.update_layout(height=250, margin=dict(l=100, r=10, t=10, b=10), plot_bgcolor='rgba(245, 247, 250, 0.5)', 
+                    paper_bgcolor='rgba(255, 255, 255, 0)', xaxis=dict(showgrid=True, gridwidth=1, gridcolor='#e0e0e0', showticklabels=False), 
+                    yaxis=dict(showgrid=False), font=dict(family='Segoe UI', size=9, color='#333'), hovermode='closest', showlegend=False)
+                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+        with col3:
+            if len(df_filtrado) > 0 and 'Subgrupo' in df_filtrado.columns:
+                subgrupo_count = df_filtrado['Subgrupo'].value_counts().head(6)
+                fig = go.Figure(data=[go.Bar(x=subgrupo_count.values, y=subgrupo_count.index, orientation='h', 
+                    marker=dict(color=subgrupo_count.values, colorscale='Purples', line=dict(color='#6b21a8', width=1)), 
+                    text=subgrupo_count.values, textposition='auto', hovertemplate='<b>%{y}</b><br>%{x}<extra></extra>')])
+                fig.update_layout(height=250, margin=dict(l=100, r=10, t=10, b=10), plot_bgcolor='rgba(245, 247, 250, 0.5)', 
+                    paper_bgcolor='rgba(255, 255, 255, 0)', xaxis=dict(showgrid=True, gridwidth=1, gridcolor='#e0e0e0', showticklabels=False),
+                    yaxis=dict(showgrid=False), font=dict(family='Segoe UI', size=9, color='#333'), hovermode='closest', showlegend=False)
+                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+        with col4:
+            if len(df_filtrado) > 0 and 'Área Responsável' in df_filtrado.columns:
+                area_count = df_filtrado['Área Responsável'].value_counts().head(6)
+                fig = go.Figure(data=[go.Bar(x=area_count.values, y=area_count.index, orientation='h', 
+                    marker=dict(color=area_count.values, colorscale='Oranges', line=dict(color='#d97706', width=1)), 
+                    text=area_count.values, textposition='auto', hovertemplate='<b>%{y}</b><br>%{x}<extra></extra>')])
+                fig.update_layout(height=250, margin=dict(l=100, r=10, t=10, b=10), plot_bgcolor='rgba(245, 247, 250, 0.5)',
+                    paper_bgcolor='rgba(255, 255, 255, 0)', xaxis=dict(showgrid=True, gridwidth=1, gridcolor='#e0e0e0', showticklabels=False), 
+                    yaxis=dict(showgrid=False), font=dict(family='Segoe UI', size=9, color='#333'), hovermode='closest', showlegend=False)
+                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
         st.markdown("<div style='margin-top: 1rem;'></div>", unsafe_allow_html=True)
-        col_close, col_space = st.columns([1, 9])
-        with col_close:
-            if st.button("✕ Fechar", key=f"close_detail_{idx}", help="Fechar detalhes", use_container_width=True):
-                st.session_state[f"show_detail_{idx}"] = False
-                st.rerun()
+        if st.button("✕ Fechar", key="close_stats", help="Fechar estatísticas"):
+            st.session_state.show_stats = False
+            st.rerun()
     
     st.markdown("---")
-    
     if len(df_filtrado) == 0:
         st.warning("Nenhum resultado encontrado. Tente ajustar os filtros.")
     else:
-        col_results, col_export = st.columns([3, 1])
-        
+        # Linha com resultados e botões
+        col_results, col_stats, col_export = st.columns([2.5, 0.7, 0.7], gap="small")
         with col_results:
             st.markdown(f"#### Resultados: {len(df_filtrado)} registros")
-        
+        with col_stats:
+            if st.button("📊 Estatísticas", key="btn_stats_main", use_container_width=True):
+                st.session_state.show_stats = True
         with col_export:
-            buffer = BytesIO()
-            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                df_filtrado.to_excel(writer, index=False, sheet_name='Glossário')
-            buffer.seek(0)
-            st.download_button(
-                label="📥 Baixar dados em Excel",
-                data=buffer,
-                file_name=f"glossario_sinisa_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key=f"download_glossario_{datetime.now().timestamp()}"
-            )
-        
+            try:
+                wb = criar_excel_glossario_formatado(df_filtrado)
+                buffer = BytesIO()
+                wb.save(buffer)
+                buffer.seek(0)
+                st.download_button(
+                    label="📥 Baixar dados em Excel",
+                    data=buffer,
+                    file_name=f"glossario_sinisa_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"download_glossario_{datetime.now().timestamp()}",
+                    use_container_width=True
+                )
+            except Exception as e:
+                st.error(f"❌ Erro ao gerar Excel: {str(e)}")
+
         st.markdown("")
+        if st.session_state.get("show_stats", False):
+            exibir_estatisticas_modal(df_filtrado)
+            st.markdown("---")
         
         # Tabela de resultados
-        col1, col2, col3, col4, col5, col6, col7, col8 = st.columns([0.6, 3.0, 0.6, 0.6, 1.5, 0.6, 0.8, 0.4], vertical_alignment="center")
-        
+        col1, col2, col3, col4, col5, col6, col7, col8 = st.columns([0.6, 3.0, 0.6, 0.6, 1.5, 0.6, 0.8, 0.4], gap="small", vertical_alignment="center")
         with col1:
             st.markdown('<div class="table-header">Código</div>', unsafe_allow_html=True)
         with col2:
@@ -1363,39 +2290,27 @@ def pagina_glossario_informacoes():
             st.markdown('<div class="table-header">Ação</div>', unsafe_allow_html=True)
         
         for idx, row in df_filtrado.iterrows():
-            col1, col2, col3, col4, col5, col6, col7, col8 = st.columns([0.6, 3.0, 0.6, 0.6, 1.5, 0.6, 0.8, 0.4], vertical_alignment="center")
-            
+            col1, col2, col3, col4, col5, col6, col7, col8 = st.columns([0.6, 3.0, 0.6, 0.6, 1.5, 0.6, 0.8, 0.4], gap="small", vertical_alignment="center")
             with col1:
                 st.markdown(f'<div class="table-row">{row["Código da informação"]}</div>', unsafe_allow_html=True)
-            
             with col2:
                 st.markdown(f'<div class="table-row">{row["Nome da informação"]}</div>', unsafe_allow_html=True)
-            
             with col3:
                 st.markdown(f'<div class="table-row">{row["Módulo"]}</div>', unsafe_allow_html=True)
-            
             with col4:
                 st.markdown(f'<div class="table-row">{row["Formulário"]}</div>', unsafe_allow_html=True)
-            
             with col5:
                 subform = row['Subformulário'] if pd.notna(row['Subformulário']) else '-'
                 st.markdown(f'<div class="table-row">{subform}</div>', unsafe_allow_html=True)
-            
             with col6:
                 unidade = row['Unidade'] if pd.notna(row['Unidade']) else '-'
                 st.markdown(f'<div class="table-row">{unidade}</div>', unsafe_allow_html=True)
-            
             with col7:
                 area = row['Área Responsável'] if pd.notna(row['Área Responsável']) else '-'
                 st.markdown(f'<div class="table-row">{area}</div>', unsafe_allow_html=True)
-            
             with col8:                    
-                if st.button("🔍", key=f"detail_{idx}", help="Ver detalhes"):
-                    st.session_state[f"show_detail_{idx}"] = True
-            
-            if st.session_state.get(f"show_detail_{idx}", False):
-                exibir_detalhes_modal(row, idx)
-            
+                if st.button("🔍", key=f"detail_{idx}", help="Ver detalhes", use_container_width=True):
+                    exibir_detalhes_popup(row)
             st.markdown('<div class="table-divider"></div>', unsafe_allow_html=True)
 
 def pagina_glossario_indicadores():
@@ -1440,19 +2355,31 @@ def pagina_relatorios_municipio():
         <p class="header-subtitle">Sistema Nacional de Informações sobre Saneamento</p>
     </div>
     """, unsafe_allow_html=True)
-    
     st.markdown("### 🏘️ Relatório Gerencial por Município")
     
     LARGURA_COD_DESC = 350
     LARGURA_UN = 60
     LARGURA_MES = 60
     
-    df_agems = load_dados_agems()
+    # 1. Obter anos (abas) disponíveis usando a função existente
+    anos_disponiveis = obter_anos_disponiveis()
+        
+    # Inicializar session state para o ano
+    if "ano_filter_rel" not in st.session_state:
+        st.session_state.ano_filter_rel = anos_disponiveis[0]
+        
+    # 2. Carregar dados do ano selecionado
+    df_agems = load_dados_agems(st.session_state.ano_filter_rel)
     
     if df_agems is not None and len(df_agems) > 0:
         # Inicializar session state
         if "municipio_filter_rel" not in st.session_state:
-            st.session_state.municipio_filter_rel = sorted(df_agems['municipio'].dropna().unique().tolist())[0]
+            municipios_list = sorted(df_agems['municipio'].dropna().unique().tolist())
+            # Colocar "ESTADO" na primeira posição
+            if "ESTADO" in municipios_list:
+                municipios_list.remove("ESTADO")
+                municipios_list.insert(0, "ESTADO")
+            st.session_state.municipio_filter_rel = municipios_list[0]
         if "modulo_filter_rel" not in st.session_state:
             st.session_state.modulo_filter_rel = "Todos"
         if "formulario_filter_rel" not in st.session_state:
@@ -1463,22 +2390,23 @@ def pagina_relatorios_municipio():
             st.session_state.subgrupo_filter_rel = "Todos"
         if "search_unificado_rel" not in st.session_state:
             st.session_state.search_unificado_rel = ""
-        
+            
         # Callback para limpar filtros
         def limpar_filtros_callback():
             """Callback para limpar todos os filtros"""
             st.session_state.municipio_filter_rel = sorted(df_agems['municipio'].dropna().unique().tolist())[0]
+            st.session_state.ano_filter_rel = anos_disponiveis[0]
             st.session_state.modulo_filter_rel = "Todos"
             st.session_state.formulario_filter_rel = "Todos"
             st.session_state.subformulario_filter_rel = "Todos"
             st.session_state.subgrupo_filter_rel = "Todos"
             st.session_state.search_unificado_rel = ""
-        
+            
         # Funções para obter valores únicos dos filtros
         @st.cache_data
         def get_municipios_rel():
             return sorted(df_agems['municipio'].dropna().unique().tolist())
-        
+            
         def get_filtro_relatorio(coluna, municipio, modulo="Todos", formulario="Todos", subformulario="Todos"):
             """Obtém valores únicos para filtros do relatório"""
             df_temp = df_agems[df_agems['municipio'] == municipio]
@@ -1487,20 +2415,32 @@ def pagina_relatorios_municipio():
             if formulario != "Todos":
                 df_temp = df_temp[df_temp['formulario'] == formulario]
             if subformulario != "Todos":
-                df_temp = df_temp[df_temp['subformulario_gruopo'] == subformulario]
+                df_temp = df_temp[df_temp['subformulario_grupo'] == subformulario]
             return ["Todos"] + sorted(df_temp[coluna].dropna().unique().tolist())
-        
-        # Linha 1 - Município e botões
-        col1, col2, col3 = st.columns([3, 0.5, 0.7])
+            
+        # Linha 1 - Município, Ano e botões
+        col1, col2, col3, col4 = st.columns([1.5, 0.3, 0.5, 1.5])
         
         with col1:
+            municipios_list = sorted(df_agems['municipio'].dropna().unique().tolist())
+            if "ESTADO" in municipios_list:
+                municipios_list.remove("ESTADO")
+                municipios_list.insert(0, "ESTADO")
+
             municipio_selecionado = st.selectbox(
                 "🏘️ Município",
-                get_municipios_rel(),
+                municipios_list,
                 key="municipio_filter_rel"
             )
-        
+            
         with col2:
+            ano_selecionado = st.selectbox(
+                "📅 Ano",
+                anos_disponiveis,
+                key="ano_filter_rel"
+            )
+            
+        with col3:
             st.markdown("<div style='padding-top: 10px;'></div>", unsafe_allow_html=True)
             st.button(
                 "🔄 Limpar Filtros",
@@ -1508,35 +2448,31 @@ def pagina_relatorios_municipio():
                 key="btn_clear_rel",
                 on_click=limpar_filtros_callback
             )
-        
-        with col3:
+            
+        with col4:
             st.markdown("<div style='padding-top: 10px;'></div>", unsafe_allow_html=True)
             export_placeholder = st.empty()
-        
+            
         # Linha 2 - Filtros
         col1, col2, col3, col4, col5 = st.columns([1, 1, 1, 1, 1.5])
-        
         with col1:
             modulo_selecionado = st.selectbox(
                 "Módulo",
                 ["Todos"] + sort_modulos(get_filtro_relatorio('modulo', municipio_selecionado)[1:]),
                 key="modulo_filter_rel"
             )
-        
         with col2:
             formulario_selecionado = st.selectbox(
                 "Formulário",
                 get_filtro_relatorio('formulario', municipio_selecionado, modulo_selecionado),
                 key="formulario_filter_rel"
             )
-        
         with col3:
             subformulario_selecionado = st.selectbox(
                 "Subformulário",
-                get_filtro_relatorio('subformulario_gruopo', municipio_selecionado, modulo_selecionado, formulario_selecionado),
+                get_filtro_relatorio('subformulario_grupo', municipio_selecionado, modulo_selecionado, formulario_selecionado),
                 key="subformulario_filter_rel"
             )
-        
         with col4:
             subgrupo_selecionado = st.selectbox(
                 "Subgrupo",
@@ -1544,63 +2480,136 @@ def pagina_relatorios_municipio():
                                     formulario_selecionado, subformulario_selecionado),
                 key="subgrupo_filter_rel"
             )
-        
         with col5:
             busca_unificada = st.text_input(
                 "🔎 Buscar (Código ou Descrição)",
                 key="search_unificado_rel",
                 placeholder="Digite código ou descrição"
             )
-        
+            
         # Filtrar dados
         df_municipio = df_agems[df_agems['municipio'] == municipio_selecionado].copy()
-
         df_municipio = aplicar_filtros(df_municipio, {
             'modulo': modulo_selecionado,
             'formulario': formulario_selecionado,
-            'subformulario_gruopo': subformulario_selecionado,
+            'subformulario_grupo': subformulario_selecionado,
             'subgrupo_palavra_chave': subgrupo_selecionado
         })
-
+        
         if busca_unificada:
             df_municipio = df_municipio[
                 (df_municipio['codigo_da_informacao_indicador'].str.contains(busca_unificada, case=False, na=False)) |
                 (df_municipio['nome_da_informacao_indicador'].str.contains(busca_unificada, case=False, na=False))
             ]
-
+            
+        # =====================================================================
+        # INÍCIO DA SEÇÃO DE EXPORTAÇÃO ATUALIZADA COM POPUP
+        # =====================================================================
+        
+        # Inicializar session state para ZIP
+        if "zip_gerado" not in st.session_state:
+            st.session_state.zip_gerado = None
+        if "zip_pronto" not in st.session_state:
+            st.session_state.zip_pronto = False
+            
+        # Função para o popup de geração do ZIP
+        @st.dialog("📦 Baixar Todos os Municípios", width="large")
+        def popup_gerar_zip():
+            """Popup para gerar ZIP de todos os municípios"""
+            try:
+                # Placeholder para mensagem
+                msg_placeholder = st.empty()
+                
+                # Mostrar mensagem de carregamento
+                with msg_placeholder.container():
+                    st.markdown("""
+                    <div style="text-align: center; padding: 2rem;">
+                        <h3 style="color: #1f4788; margin-bottom: 1rem;">⏳ Gerando ZIP com todos os municípios...</h3>
+                        <p style="color: #666; font-size: 1rem;">Isso pode levar alguns segundos</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                # Gerar ZIP
+                zip_buffer = criar_zip_relatorios_todos_municipios(
+                    df_agems,
+                    ano_selecionado,
+                    modulo_selecionado,
+                    formulario_selecionado,
+                    subformulario_selecionado,
+                    subgrupo_selecionado,
+                    busca_unificada
+                )
+                
+                # Armazenar ZIP em session state
+                st.session_state.zip_gerado = zip_buffer
+                st.session_state.zip_pronto = True
+                
+                # Limpar placeholder e mostrar sucesso
+                msg_placeholder.empty()
+                
+                st.markdown("""
+                <div style="text-align: center; padding: 2rem;">
+                    <h3 style="color: #2d7a4a; margin-bottom: 1.5rem;">✅ ZIP Gerado com Sucesso!</h3>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # Mostrar botão de download
+                st.download_button(
+                    label="📥 Clique aqui para Download",
+                    data=st.session_state.zip_gerado,
+                    file_name=f"relatorios_todos_municipios_{ano_selecionado}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+                    mime="application/zip",
+                    key=f"download_zip_popup_{datetime.now().timestamp()}",
+                    use_container_width=True
+                )
+                
+            except Exception as e:
+                st.error(f"❌ Erro ao gerar ZIP: {str(e)}")
+                
         # Botão de exportação
         with export_placeholder.container():
-            try:
-                todas_colunas_meses = sorted([col for col in df_municipio.columns if '/' in col and len(col) == 7])
-                colunas_meses = [mes for mes in todas_colunas_meses 
-                                if len(df_municipio[mes].dropna()) > 0]
+            col_btn1, col_btn2 = st.columns(2, gap="small")
+            
+            with col_btn1:
+                try:
+                    todas_colunas_meses = sorted([col for col in df_municipio.columns if '/' in col and len(col) == 7])
+                    colunas_meses = [mes for mes in todas_colunas_meses if len(df_municipio[mes].dropna()) > 0]
+                    
+                    if len(df_municipio) > 0 and len(colunas_meses) > 0:
+                        wb = criar_relatorio_excel_generico(df_municipio, municipio_selecionado, colunas_meses)
+                        buffer = BytesIO()
+                        wb.save(buffer)
+                        buffer.seek(0)
+                        st.download_button(
+                            label="📥 Baixar Relatório em Excel",
+                            data=buffer,
+                            file_name=f"relatorio_{municipio_selecionado.replace(' ', '_')}_{ano_selecionado}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key=f"download_relatorio_municipio_{datetime.now().timestamp()}",
+                            use_container_width=True
+                        )
+                except Exception as e:
+                    st.error(f"❌ Erro ao gerar relatório: {str(e)}")
+            
+            with col_btn2:
+                # Botão para abrir popup
+                if st.button("📦 Baixar Todos os Municípios", use_container_width=True, key="btn_gerar_zip_popup"):
+                    popup_gerar_zip()
+                    
+        # =====================================================================
+        # FIM DA SEÇÃO DE EXPORTAÇÃO
+        # =====================================================================
                 
-                wb = criar_relatorio_excel_generico(df_municipio, municipio_selecionado, colunas_meses)
-                buffer = BytesIO()
-                wb.save(buffer)
-                buffer.seek(0)
-                
-                st.download_button(
-                    label="📥 Baixar Relatório em Excel",
-                    data=buffer,
-                    file_name=f"relatorio_{municipio_selecionado.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key=f"download_relatorio_municipio_{datetime.now().timestamp()}"
-                )
-            except Exception as e:
-                st.error(f"❌ Erro ao gerar relatório: {str(e)}")
-
         if len(df_municipio) > 0:
             # Obter colunas de meses
             todas_colunas_meses = sorted([col for col in df_municipio.columns if '/' in col and len(col) == 7])
-            colunas_meses = [mes for mes in todas_colunas_meses 
-                            if len(df_municipio[mes].dropna()) > 0]
+            colunas_meses = [mes for mes in todas_colunas_meses if len(df_municipio[mes].dropna()) > 0]
             
             # Cabeçalho do Relatório
             st.markdown("---")
             st.markdown(f"""
             <div class="header-container">
-                <h2 style="color: white; margin: 0;">📊 {municipio_selecionado}</h2>
+                <h2 style="color: white; margin: 0;">📊 {municipio_selecionado} - {ano_selecionado}</h2>
                 <p style="color: #e8f0ff; margin: 0.5rem 0 0 0;">Dados AGEMS - {datetime.now().strftime('%d/%m/%Y')}</p>
             </div>
             """, unsafe_allow_html=True)
@@ -1636,8 +2645,8 @@ def pagina_relatorios_municipio():
                         </div>
                         """, unsafe_allow_html=True)
                         
-                        for subformulario in df_formulario['subformulario_gruopo'].unique():
-                            df_subformulario = df_formulario[df_formulario['subformulario_gruopo'] == subformulario]
+                        for subformulario in df_formulario['subformulario_grupo'].unique():
+                            df_subformulario = df_formulario[df_formulario['subformulario_grupo'] == subformulario]
                             
                             st.markdown(f"""
                             <div style="background-color: {cores['subform_color']}; color: #1f4788; padding: 0.5rem 0.8rem; margin-top: 0rem; margin-bottom: 0rem; border-left: 3px solid {cores['border_color']}; font-weight: 600; font-size: 0.95rem;">
@@ -1657,7 +2666,6 @@ def pagina_relatorios_municipio():
                                 html_tabela = criar_tabela_html(df_subgrupo, colunas_meses, LARGURA_COD_DESC, LARGURA_UN, LARGURA_MES)
                                 st.markdown(html_tabela, unsafe_allow_html=True)
                                 st.markdown("")
-            
             st.markdown("---")
         else:
             st.warning(f"⚠️ Nenhum dado encontrado com os filtros selecionados")
@@ -1672,13 +2680,17 @@ def pagina_relatorios_consolidado():
         <p class="header-subtitle">Sistema Nacional de Informações sobre Saneamento</p>
     </div>
     """, unsafe_allow_html=True)
-    
     st.markdown("### 📊 Relatório Consolidado")
     
-    df_sinisa = load_dados_sinisa()
+    # ===== OBTER ANOS DISPONÍVEIS DINAMICAMENTE =====
+    anos_disponiveis = obter_anos_disponiveis()
+    ano_padrao = anos_disponiveis[0]
+    
+    # Carregar dados do ano padrão
+    df_sinisa = load_dados_sinisa(ano=ano_padrao)
     
     if df_sinisa is not None and len(df_sinisa) > 0:
-        # Inicializar session state
+        # ===== INICIALIZAR SESSION STATE =====
         if "modulo_filter_cons" not in st.session_state:
             st.session_state.modulo_filter_cons = "Todos"
         if "informacao_filter_cons" not in st.session_state:
@@ -1702,6 +2714,22 @@ def pagina_relatorios_consolidado():
                 "subgrupo": "Todos",
                 "area": "Todos"
             }
+        if "ano_selecionado_cons" not in st.session_state:
+            st.session_state.ano_selecionado_cons = ano_padrao
+        if "visao_consolidado" not in st.session_state:
+            st.session_state.visao_consolidado = "Acumulado no ano"
+        if "incluir_colunas_vazias_cons" not in st.session_state:
+            st.session_state.incluir_colunas_vazias_cons = False
+            
+        # Inicializar session state para os ZIPs gerados
+        if "zip_modulo_gerado" not in st.session_state:
+            st.session_state.zip_modulo_gerado = None
+        if "zip_area_gerado" not in st.session_state:
+            st.session_state.zip_area_gerado = None
+        
+        # Inicializar session state para Excel consolidado
+        if "excel_consolidado_gerado" not in st.session_state:
+            st.session_state.excel_consolidado_gerado = None
         
         # Callback para limpar filtros
         def limpar_filtros_consolidado_callback():
@@ -1725,42 +2753,37 @@ def pagina_relatorios_consolidado():
             if formulario != "Todos":
                 df_temp = df_temp[df_temp['formulario'] == formulario]
             if subformulario != "Todos":
-                df_temp = df_temp[df_temp['subformulario_gruopo'] == subformulario]
+                df_temp = df_temp[df_temp['subformulario_grupo'] == subformulario]
             if subgrupo != "Todos":
                 df_temp = df_temp[df_temp['subgrupo_palavra_chave'] == subgrupo]
             return ["Todos"] + sorted(df_temp[coluna].dropna().unique().tolist())
         
         # Linha 1 - Filtros
         col1, col2, col3, col4, col5, col6 = st.columns([1, 1, 1, 1, 1, 1])
-        
         with col1:
             modulo_selecionado_cons = st.selectbox(
                 "Módulo",
                 ["Todos"] + sort_modulos(get_filtro_consolidado('modulo')[1:]),
                 key="modulo_filter_cons"
             )
-        
         with col2:
             informacao_selecionada_cons = st.selectbox(
                 "Informação/Indicador",
                 get_filtro_consolidado('informacao_indicador', modulo_selecionado_cons),
                 key="informacao_filter_cons"
             )
-        
         with col3:
             formulario_selecionado_cons = st.selectbox(
                 "Formulário",
                 get_filtro_consolidado('formulario', modulo_selecionado_cons, informacao_selecionada_cons),
                 key="formulario_filter_cons"
             )
-        
         with col4:
             subformulario_selecionado_cons = st.selectbox(
                 "Subformulário",
-                get_filtro_consolidado('subformulario_gruopo', modulo_selecionado_cons, informacao_selecionada_cons, formulario_selecionado_cons),
+                get_filtro_consolidado('subformulario_grupo', modulo_selecionado_cons, informacao_selecionada_cons, formulario_selecionado_cons),
                 key="subformulario_filter_cons"
             )
-        
         with col5:
             subgrupo_selecionado_cons = st.selectbox(
                 "Subgrupo",
@@ -1768,11 +2791,10 @@ def pagina_relatorios_consolidado():
                                       formulario_selecionado_cons, subformulario_selecionado_cons),
                 key="subgrupo_filter_cons"
             )
-        
         with col6:
             area_selecionada_cons = st.selectbox(
                 "Área Responsável",
-                get_filtro_consolidado('area_responsavel', modulo_selecionado_cons, informacao_selecionada_cons, 
+                get_filtro_consolidado('area_responsavel', modulo_selecionado_cons, informacao_selecionada_cons,
                                       formulario_selecionado_cons, subformulario_selecionado_cons, subgrupo_selecionado_cons),
                 key="area_filter_cons"
             )
@@ -1782,7 +2804,7 @@ def pagina_relatorios_consolidado():
             'modulo': modulo_selecionado_cons,
             'informacao_indicador': informacao_selecionada_cons,
             'formulario': formulario_selecionado_cons,
-            'subformulario_gruopo': subformulario_selecionado_cons,
+            'subformulario_grupo': subformulario_selecionado_cons,
             'subgrupo_palavra_chave': subgrupo_selecionado_cons,
             'area_responsavel': area_selecionada_cons
         })
@@ -1799,7 +2821,6 @@ def pagina_relatorios_consolidado():
             "subgrupo": subgrupo_selecionado_cons,
             "area": area_selecionada_cons
         }
-        
         if filtros_atuais != st.session_state.filtros_anteriores:
             st.session_state.filtros_anteriores = filtros_atuais.copy()
             st.session_state.indicadores_selecionados = sorted(df_consolidado['codigo_da_informacao_indicador'].unique().tolist())
@@ -1815,10 +2836,15 @@ def pagina_relatorios_consolidado():
             """, unsafe_allow_html=True)
             
             indicadores_disponiveis = sorted(df_consolidado['codigo_da_informacao_indicador'].unique().tolist())
-            
+            codigo_nome_unidade_map = {}
+            # Obter TODOS os indicadores disponíveis (não apenas os que têm dados após filtros)
+            indicadores_disponiveis = sorted(df_sinisa['codigo_da_informacao_indicador'].unique().tolist())
+
+            # Criar mapa de código -> nome/unidade usando df_sinisa (completo)
             codigo_nome_unidade_map = {}
             for codigo in indicadores_disponiveis:
-                row_data = df_consolidado[df_consolidado['codigo_da_informacao_indicador'] == codigo].iloc[0]
+                # Procurar em df_sinisa (dados completos)
+                row_data = df_sinisa[df_sinisa['codigo_da_informacao_indicador'] == codigo].iloc[0]
                 codigo_nome_unidade_map[codigo] = formatar_nome_com_unidade(row_data['nome_da_informacao_indicador'], row_data['unidade'])
             
             indicadores_selecionados = st.multiselect(
@@ -1828,20 +2854,189 @@ def pagina_relatorios_consolidado():
                 format_func=lambda x: f"{x} - {codigo_nome_unidade_map.get(x, '')}",
                 key="multiselect_indicadores"
             )
-            
             st.session_state.indicadores_selecionados = indicadores_selecionados
             
             if len(indicadores_selecionados) > 0:
                 df_consolidado_final = df_consolidado[df_consolidado['codigo_da_informacao_indicador'].isin(indicadores_selecionados)].copy()
             else:
                 df_consolidado_final = df_consolidado.copy()           
-
+            
             st.markdown("<div style='padding-top: 5px;'></div>", unsafe_allow_html=True)
+            
+            # ===== SELEÇÃO DE VISÃO LOGO ACIMA DA TABELA =====
+            col_visao, col_checkbox = st.columns([4, 1])
+            with col_visao:
+                visao_consolidado = st.radio(
+                    "Selecione a visão dos valores:",
+                    options=[
+                        "Acumulado no ano",
+                        "Acumulado últimos 12 meses",
+                        "Média - últimos 12 meses"
+                    ],
+                    horizontal=True,
+                    key="visao_consolidado"
+                )
+            with col_checkbox:
+                st.markdown("<div style='padding-top: 8px;'></div>", unsafe_allow_html=True)
+                incluir_colunas_vazias = st.checkbox(
+                    "Incluir colunas vazias",
+                    value=False,
+                    key="incluir_colunas_vazias_cons"
+                )
+            
+            # Mapear visão para coluna
+            mapa_visao_coluna = {
+                "Acumulado no ano": "anual",
+                "Acumulado últimos 12 meses": "acumulado_12_meses",
+                "Média - últimos 12 meses": "media_12_meses"
+            }
+            coluna_valor_selecionada = mapa_visao_coluna[visao_consolidado]
+            
+            # ===== SELEÇÃO DE ANO (APARECE APENAS QUANDO "ACUMULADO NO ANO" É SELECIONADO) =====
+            ano_para_filtro = ano_padrao  # Padrão
+            if visao_consolidado == "Acumulado no ano":
+                col_ano, col_espaco = st.columns([1, 5])
+                with col_ano:
+                    ano_para_filtro = st.selectbox(
+                        "Selecione o ano:",
+                        options=anos_disponiveis,
+                        index=anos_disponiveis.index(st.session_state.ano_selecionado_cons) if st.session_state.ano_selecionado_cons in anos_disponiveis else 0,
+                        key="ano_selecionado_cons"
+                    )
+                # Se o ano mudou, recarregar dados
+                if ano_para_filtro != st.session_state.ano_selecionado_cons:
+                    st.session_state.ano_selecionado_cons = ano_para_filtro
+                    df_sinisa = load_dados_sinisa(ano=ano_para_filtro)
+                    st.rerun()
 
-            # Linha de botões - Separada em container para melhor performance
+            # =====================================================================
+            # FUNÇÕES DE POPUP PARA EXPORTAÇÃO (SÓ EXECUTAM AO CLICAR)
+            # =====================================================================
+            
+            # 1. Popup para Módulo
+            @st.dialog("📦 Exportar por Formulário", width="large")
+            def popup_exportar_modulo():
+                try:
+                    msg_placeholder = st.empty()
+                    # Mensagem de carregamento
+                    msg_placeholder.markdown("""
+                    <div style="text-align: center; padding: 2rem;">
+                        <h3 style="color: #1f4788; margin-bottom: 1rem;">⏳ Gerando ZIP por Módulo...</h3>
+                        <p style="color: #666; font-size: 1rem;">Isso pode levar alguns segundos</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    zip_buffer = criar_exportacao_zip_por_formulario(
+                        tuple(df_sinisa.to_dict('records')),
+                        coluna_valor=coluna_valor_selecionada,
+                        incluir_colunas_vazias=incluir_colunas_vazias
+                    )
+                    
+                    st.session_state.zip_modulo_gerado = zip_buffer
+                    
+                    # Substitui a mensagem de carregamento pela de sucesso
+                    msg_placeholder.markdown("""
+                    <div style="text-align: center; padding: 2rem;">
+                        <h3 style="color: #2d7a4a; margin-bottom: 1.5rem;">✅ ZIP Gerado com Sucesso!</h3>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    st.download_button(
+                        label="📥 Clique aqui para Download",
+                        data=st.session_state.zip_modulo_gerado,
+                        file_name=f"dados_por_formulario_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+                        mime="application/zip",
+                        key=f"download_modulo_{datetime.now().timestamp()}",
+                        use_container_width=True
+                    )
+                except Exception as e:
+                    st.error(f"❌ Erro ao gerar exportação por módulo: {str(e)}")
+
+            # 2. Popup para Área
+            @st.dialog("📦 Exportar por Área", width="large")
+            def popup_exportar_area():
+                try:
+                    msg_placeholder = st.empty()
+                    # Mensagem de carregamento
+                    msg_placeholder.markdown("""
+                    <div style="text-align: center; padding: 2rem;">
+                        <h3 style="color: #1f4788; margin-bottom: 1rem;">⏳ Gerando ZIP por Área...</h3>
+                        <p style="color: #666; font-size: 1rem;">Isso pode levar alguns segundos</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    zip_buffer = criar_exportacao_zip_por_area(
+                        tuple(df_sinisa.to_dict('records')),
+                        coluna_valor=coluna_valor_selecionada,
+                        incluir_colunas_vazias=incluir_colunas_vazias
+                    )
+                    
+                    st.session_state.zip_area_gerado = zip_buffer
+                    
+                    # Substitui a mensagem de carregamento pela de sucesso
+                    msg_placeholder.markdown("""
+                    <div style="text-align: center; padding: 2rem;">
+                        <h3 style="color: #2d7a4a; margin-bottom: 1.5rem;">✅ ZIP Gerado com Sucesso!</h3>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    st.download_button(
+                        label="📥 Clique aqui para Download",
+                        data=st.session_state.zip_area_gerado,
+                        file_name=f"dados_por_area_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+                        mime="application/zip",
+                        key=f"download_area_{datetime.now().timestamp()}",
+                        use_container_width=True
+                    )
+                except Exception as e:
+                    st.error(f"❌ Erro ao gerar exportação por área: {str(e)}")
+
+            # 3. Popup para Excel Consolidado
+            @st.dialog("📊 Exportar em Excel", width="large")
+            def popup_exportar_excel():
+                try:
+                    msg_placeholder = st.empty()
+                    # Mensagem de carregamento
+                    msg_placeholder.markdown("""
+                    <div style="text-align: center; padding: 2rem;">
+                        <h3 style="color: #1f4788; margin-bottom: 1rem;">⏳ Gerando arquivo Excel...</h3>
+                        <p style="color: #666; font-size: 1rem;">Isso pode levar alguns segundos</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    wb = criar_relatorio_consolidado_excel(
+                        df_consolidado_final, 
+                        tuple(indicadores_selecionados), 
+                        coluna_valor=coluna_valor_selecionada,
+                        incluir_colunas_vazias=incluir_colunas_vazias
+                    )
+                    buffer = BytesIO()
+                    wb.save(buffer)
+                    buffer.seek(0)
+                    
+                    st.session_state.excel_consolidado_gerado = buffer
+                    
+                    # Substitui a mensagem de carregamento pela de sucesso
+                    msg_placeholder.markdown("""
+                    <div style="text-align: center; padding: 2rem;">
+                        <h3 style="color: #2d7a4a; margin-bottom: 1.5rem;">✅ Excel Gerado com Sucesso!</h3>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    st.download_button(
+                        label="📥 Clique aqui para Download",
+                        data=st.session_state.excel_consolidado_gerado,
+                        file_name=f"relatorio_consolidado_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key=f"download_relatorio_consolidado_{datetime.now().timestamp()}",
+                        use_container_width=True
+                    )
+                except Exception as e:
+                    st.error(f"❌ Erro ao gerar relatório: {str(e)}")
+
+            # Linha de botões
             col1, col2, col3, col4 = st.columns([1, 1, 1, 1], gap="small")
-
-
+            
             with col1:
                 st.button(
                     "🔄 Limpar Filtros",
@@ -1850,71 +3045,32 @@ def pagina_relatorios_consolidado():
                     use_container_width=True
                 )
             
+            # BOTÃO EXCEL - ABRE POPUP AO CLICAR
             with col2:
-                btn_excel_placeholder = st.empty()
+                if st.button("📥 Exportar em Excel", use_container_width=True, key="btn_excel_cons"):
+                    popup_exportar_excel()
             
             with col3:
-                btn_modulo_placeholder = st.empty()
+                if st.button("📦 Exportar por Formulário", use_container_width=True, key="btn_modulo_cons"):
+                    popup_exportar_modulo()
             
             with col4:
-                btn_area_placeholder = st.empty()
+                if st.button("📦 Exportar por Área", use_container_width=True, key="btn_area_cons"):
+                    popup_exportar_area()
             
-            # Gerar botões sob demanda
-            with btn_excel_placeholder.container():
-                try:
-                    # Converter para tuple para cache funcionar
-                    wb = criar_relatorio_consolidado_excel(df_consolidado_final, tuple(indicadores_selecionados))
-                    buffer = BytesIO()
-                    wb.save(buffer)
-                    buffer.seek(0)
-                    st.download_button(
-                        label="📥 Exportar em Excel",
-                        data=buffer,
-                        file_name=f"relatorio_consolidado_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key=f"download_relatorio_consolidado_{datetime.now().timestamp()}",
-                        use_container_width=True
-                    )
-                except Exception as e:
-                    st.error(f"❌ Erro ao gerar relatório: {str(e)}")
-            
-            with btn_modulo_placeholder.container():
-                try:
-                    zip_buffer = criar_exportacao_zip_por_modulo(df_sinisa)
-                    st.download_button(
-                        label="📦 Exportar por Módulo",
-                        data=zip_buffer,
-                        file_name=f"dados_por_modulo_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
-                        mime="application/zip",
-                        key=f"download_modulo_{datetime.now().timestamp()}",
-                        use_container_width=True
-                    )
-                except Exception as e:
-                    st.error(f"❌ Erro ao gerar exportação por módulo: {str(e)}")
-            
-            with btn_area_placeholder.container():
-                try:
-                    zip_buffer = criar_exportacao_zip_por_area(df_sinisa)
-                    st.download_button(
-                        label="📦 Exportar por Área",
-                        data=zip_buffer,
-                        file_name=f"dados_por_area_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
-                        mime="application/zip",
-                        key=f"download_area_{datetime.now().timestamp()}",
-                        use_container_width=True
-                    )
-                except Exception as e:
-                    st.error(f"❌ Erro ao gerar exportação por área: {str(e)}")
-            
-            st.markdown("---")
-            
+            st.markdown("---")          
+
             # Exibir tabela consolidada
-            html_tabela_consolidada = criar_tabela_consolidada_html(df_consolidado_final, indicadores_selecionados)
+            html_tabela_consolidada = criar_tabela_consolidada_html(
+                df_consolidado_final, 
+                indicadores_selecionados,
+                coluna_valor_selecionada,
+                incluir_colunas_vazias
+            )
             st.markdown(html_tabela_consolidada, unsafe_allow_html=True)
-            
             st.markdown("---")
     else:
-        st.error("❌ Não foi possível carregar os dados SINISA")
+        st.error(f"❌ Não foi possível carregar os dados SINISA do ano {ano_padrao}")
 
 def pagina_relatorios_verificacao():
     """Página Relatórios - Verificação"""
@@ -1930,8 +3086,9 @@ def pagina_relatorios_verificacao():
     df_glossario = load_data()
     df_correspondencia = load_correspondencia_sigis_sinisa()
     df_dados_sigis = load_dados_sigis()
+    df_sinisa = load_dados_sinisa()  # ← FUNÇÃO CORRETA
     
-    if df_glossario is None or df_correspondencia is None or df_dados_sigis is None:
+    if df_glossario is None or df_correspondencia is None or df_dados_sigis is None or df_sinisa is None:
         st.error("❌ Não foi possível carregar os dados necessários")
         return
     
@@ -2000,8 +3157,8 @@ def pagina_relatorios_verificacao():
             return ""
         return str(df_termo.iloc[0]['Nome da informação']).strip()
     
-    def criar_tabela_verificacao(codigo_sinisa, municipio_selecionado):
-        """Cria tabela com componentes e valores dos últimos 12 meses"""
+    def criar_tabela_verificacao(codigo_sinisa, municipio_selecionado, ano_selecionado):
+        """Cria tabela com componentes e valores dos 12 meses do ano selecionado"""
         # Obter componentes
         componentes = get_componentes_informacao(codigo_sinisa)
         
@@ -2009,8 +3166,10 @@ def pagina_relatorios_verificacao():
             st.warning(f"Nenhum componente encontrado para {codigo_sinisa} na tabela de correspondência.")
             return None, None
         
-        # Filtrar dados SIGIS para o município
-        df_municipio = df_dados_sigis[df_dados_sigis['nome_localidade'] == municipio_selecionado].copy()
+        # Filtrar dados SIGIS para o município e ano
+        df_municipio = df_dados_sigis[
+            (df_dados_sigis['nome_localidade'] == municipio_selecionado)
+        ].copy()
         
         if len(df_municipio) == 0:
             st.warning(f"Nenhum dado encontrado para o município {municipio_selecionado}.")
@@ -2019,14 +3178,11 @@ def pagina_relatorios_verificacao():
         # Converter data para datetime
         df_municipio['data'] = pd.to_datetime(df_municipio['data'])
         
-        # Obter últimos 12 meses
-        data_maxima = df_municipio['data'].max()
-        data_minima = data_maxima - pd.DateOffset(months=11)
-        df_municipio = df_municipio[(df_municipio['data'] >= data_minima) & (df_municipio['data'] <= data_maxima)]
+        # Filtrar pelo ano selecionado
+        df_municipio = df_municipio[df_municipio['data'].dt.year == ano_selecionado]
         
-        # Criar lista de meses (MM/AAAA)
-        meses_unicos = sorted(df_municipio['data'].dt.to_period('M').unique())
-        meses_formatados = [f"{mes.month:02d}/{mes.year}" for mes in meses_unicos]
+        # Criar lista de meses (01/2025, 02/2025, ..., 12/2025)
+        meses_formatados = [f"{i:02d}/{ano_selecionado}" for i in range(1, 13)]
         
         # Informação principal
         info_principal = get_descritivo_informacao(codigo_sinisa)
@@ -2041,6 +3197,7 @@ def pagina_relatorios_verificacao():
         html += '<th style="padding: 0.5rem 0.75rem; text-align: left; border: 1px solid #d0d8e0; font-weight: 600; min-width: 500px; height: 40px;">Informação</th>'
         for mes in meses_formatados:
             html += f'<th style="padding: 0.5rem 0.75rem; text-align: center; border: 1px solid #d0d8e0; font-weight: 600; white-space: nowrap; height: 40px;">{mes}</th>'
+        html += '<th style="padding: 0.5rem 0.75rem; text-align: center; border: 1px solid #d0d8e0; font-weight: 600; white-space: nowrap; height: 40px;">Acumulado</th>'
         html += '</tr></thead>'
         
         # Dados
@@ -2054,7 +3211,8 @@ def pagina_relatorios_verificacao():
             'mes_formatado': [],
             'valor': [],
             'nivel': [],
-            'cor': []
+            'cor': [],
+            'acumulado': []
         }
         
         # Dicionário de cores por nível
@@ -2069,31 +3227,63 @@ def pagina_relatorios_verificacao():
         html += f'<td style="padding: 0.75rem; border: 1px solid #d0d8e0; font-weight: 600; word-wrap: break-word; white-space: normal;">{codigo_sinisa} - {descricao_principal}</td>'
         
         # Valores para a informação principal (soma dos componentes)
-        for mes, mes_fmt in zip(meses_unicos, meses_formatados):
+        valor_acumulado_sinisa = 0
+        for mes_num in range(1, 13):
             valor_total = 0
             for termo_sinisa, termo_sigis in componentes:
                 if termo_sigis:
                     df_termo = df_municipio[df_municipio['cod_sigis'] == termo_sigis]
-                    df_mes = df_termo[df_termo['data'].dt.to_period('M') == mes]
+                    df_mes = df_termo[df_termo['data'].dt.month == mes_num]
                     if len(df_mes) > 0:
                         try:
                             valor_total += float(df_mes['valor'].values[0])
                         except:
                             pass
             
-            valor_formatado = f"{valor_total:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.') if valor_total > 0 else "0,00"
+            valor_formatado = f"{valor_total:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.') if valor_total > 0 else "-"
             html += f'<td style="padding: 0.75rem; border: 1px solid #d0d8e0; text-align: right; font-weight: 600;">{valor_formatado}</td>'
             
             # Adicionar ao gráfico
             dados_grafico['informacao'].append(codigo_sinisa)
             dados_grafico['descricao'].append(f"{codigo_sinisa} - {descricao_principal}")
-            dados_grafico['mes'].append(str(mes))
-            dados_grafico['mes_formatado'].append(mes_fmt)
+            dados_grafico['mes'].append(f"{mes_num:02d}/{ano_selecionado}")
+            dados_grafico['mes_formatado'].append(f"{mes_num:02d}/{ano_selecionado}")
             dados_grafico['valor'].append(valor_total)
             dados_grafico['nivel'].append('principal')
             dados_grafico['cor'].append(cores_por_nivel['principal'])
+            dados_grafico['acumulado'].append(0)  # Será preenchido depois
         
+        # Coluna Acumulado - BUSCAR DO SINISA
+        # Filtrar SINISA pelo código, município e ano
+        df_sinisa_filtrado = df_sinisa[
+            (df_sinisa['codigo_da_informacao_indicador'] == codigo_sinisa) &
+            (df_sinisa['municipio'] == municipio_selecionado)
+        ]
+        
+        # Obter o valor da coluna "anual" do SINISA
+        if len(df_sinisa_filtrado) > 0:
+            valor_acumulado_sinisa = df_sinisa_filtrado.iloc[0]['anual']
+            if pd.notna(valor_acumulado_sinisa):
+                try:
+                    valor_acumulado_sinisa = float(valor_acumulado_sinisa)
+                    valor_acum_formatado = f"{valor_acumulado_sinisa:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+                except:
+                    valor_acum_formatado = "-"
+                    valor_acumulado_sinisa = 0
+            else:
+                valor_acum_formatado = "-"
+                valor_acumulado_sinisa = 0
+        else:
+            valor_acum_formatado = "-"
+            valor_acumulado_sinisa = 0
+        
+        html += f'<td style="padding: 0.75rem; border: 1px solid #d0d8e0; text-align: right; font-weight: 600;">{valor_acum_formatado}</td>'
         html += '</tr>'
+        
+        # Atualizar acumulado na linha principal
+        if len(dados_grafico['acumulado']) >= 12:
+            for i in range(12):
+                dados_grafico['acumulado'][i] = valor_acumulado_sinisa
         
         # Verificar se a informação selecionada é ela mesma um termo (como GTA1209)
         is_termo_direto = all(t_sinisa == codigo_sinisa for t_sinisa, _ in componentes)
@@ -2110,14 +3300,18 @@ def pagina_relatorios_verificacao():
                     html += f'<tr style="background-color: #FFFFFF;">'
                     html += f'<td style="padding: 0.75rem; border: 1px solid #d0d8e0; font-weight: 400; padding-left: 2rem; color: #333; font-size: 0.85rem; word-wrap: break-word; white-space: normal;">SIGIS: {desc_sigis}</td>'
                     
-                    for mes, mes_fmt in zip(meses_unicos, meses_formatados):
-                        df_mes = df_sigis_desc[df_sigis_desc['data'].dt.to_period('M') == mes]
+                    valor_acum_sigis = 0
+                    for mes_num in range(1, 13):
+                        df_mes = df_sigis_desc[df_sigis_desc['data'].dt.month == mes_num]
                         valor = df_mes['valor'].values[0] if len(df_mes) > 0 else "-"
                         
                         if valor != "-":
                             try:
                                 valor_float = float(valor)
                                 valor_formatado = f"{valor_float:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+                                # Capturar acumulado de dezembro do SIGIS
+                                if mes_num == 12:
+                                    valor_acum_sigis = float(df_mes['valor_acumulado'].values[0]) if 'valor_acumulado' in df_mes.columns else valor_float
                             except:
                                 valor_formatado = str(valor)
                         else:
@@ -2129,12 +3323,16 @@ def pagina_relatorios_verificacao():
                         if valor != "-":
                             dados_grafico['informacao'].append(f"SIGIS: {termo_sigis}")
                             dados_grafico['descricao'].append(f"SIGIS: {desc_sigis}")
-                            dados_grafico['mes'].append(str(mes))
-                            dados_grafico['mes_formatado'].append(mes_fmt)
+                            dados_grafico['mes'].append(f"{mes_num:02d}/{ano_selecionado}")
+                            dados_grafico['mes_formatado'].append(f"{mes_num:02d}/{ano_selecionado}")
                             dados_grafico['valor'].append(float(valor))
                             dados_grafico['nivel'].append('sigis')
                             dados_grafico['cor'].append(cores_por_nivel['sigis'])
+                            dados_grafico['acumulado'].append(valor_acum_sigis if mes_num == 12 else 0)
                     
+                    # Coluna Acumulado - USAR valor_acumulado DO SIGIS
+                    valor_acum_fmt = f"{valor_acum_sigis:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.') if valor_acum_sigis > 0 else "-"
+                    html += f'<td style="padding: 0.75rem; border: 1px solid #d0d8e0; text-align: right;">{valor_acum_fmt}</td>'
                     html += '</tr>'
         
         # Se for uma informação pai (GFI1003), mostramos a hierarquia completa (SINISA -> SIGIS)
@@ -2155,29 +3353,37 @@ def pagina_relatorios_verificacao():
                 html += f'<td style="padding: 0.75rem; border: 1px solid #d0d8e0; font-weight: 500; padding-left: 2rem; word-wrap: break-word; white-space: normal;">{termo_sinisa} - {descricao_termo}</td>'
                 
                 # Valores por mês (soma dos SIGIS filhos)
-                for mes, mes_fmt in zip(meses_unicos, meses_formatados):
+                valor_acum_termo = 0
+                for mes_num in range(1, 13):
                     valor_total_termo = 0
                     for t_sigis in lista_sigis:
                         df_termo = df_municipio[df_municipio['cod_sigis'] == t_sigis]
-                        df_mes = df_termo[df_termo['data'].dt.to_period('M') == mes]
+                        df_mes = df_termo[df_termo['data'].dt.month == mes_num]
                         if len(df_mes) > 0:
                             try:
                                 valor_total_termo += float(df_mes['valor'].values[0])
+                                # Capturar acumulado de dezembro
+                                if mes_num == 12:
+                                    valor_acum_termo += float(df_mes['valor_acumulado'].values[0])
                             except:
                                 pass
                     
-                    valor_formatado = f"{valor_total_termo:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.') if valor_total_termo > 0 else "0,00"
+                    valor_formatado = f"{valor_total_termo:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.') if valor_total_termo > 0 else "-"
                     html += f'<td style="padding: 0.75rem; border: 1px solid #d0d8e0; text-align: right;">{valor_formatado}</td>'
                     
                     # Adicionar ao gráfico
                     dados_grafico['informacao'].append(termo_sinisa)
                     dados_grafico['descricao'].append(f"{termo_sinisa} - {descricao_termo}")
-                    dados_grafico['mes'].append(str(mes))
-                    dados_grafico['mes_formatado'].append(mes_fmt)
+                    dados_grafico['mes'].append(f"{mes_num:02d}/{ano_selecionado}")
+                    dados_grafico['mes_formatado'].append(f"{mes_num:02d}/{ano_selecionado}")
                     dados_grafico['valor'].append(valor_total_termo)
                     dados_grafico['nivel'].append('nivel1')
                     dados_grafico['cor'].append(cores_por_nivel['nivel1'])
+                    dados_grafico['acumulado'].append(valor_acum_termo if mes_num == 12 else 0)
                 
+                # Coluna Acumulado - USAR SIGIS
+                valor_acum_fmt = f"{valor_acum_termo:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.') if valor_acum_termo > 0 else "-"
+                html += f'<td style="padding: 0.75rem; border: 1px solid #d0d8e0; text-align: right;">{valor_acum_fmt}</td>'
                 html += '</tr>'
                 
                 # Linhas dos filhos SIGIS (ex: 8747) - BRANCO
@@ -2188,14 +3394,18 @@ def pagina_relatorios_verificacao():
                     html += f'<tr style="background-color: #FFFFFF;">'
                     html += f'<td style="padding: 0.75rem; border: 1px solid #d0d8e0; font-weight: 400; padding-left: 4rem; color: #333; font-size: 0.85rem; word-wrap: break-word; white-space: normal;">SIGIS: {desc_sigis}</td>'
                     
-                    for mes, mes_fmt in zip(meses_unicos, meses_formatados):
-                        df_mes = df_sigis_desc[df_sigis_desc['data'].dt.to_period('M') == mes]
+                    valor_acum_sigis = 0
+                    for mes_num in range(1, 13):
+                        df_mes = df_sigis_desc[df_sigis_desc['data'].dt.month == mes_num]
                         valor = df_mes['valor'].values[0] if len(df_mes) > 0 else "-"
                         
                         if valor != "-":
                             try:
                                 valor_float = float(valor)
                                 valor_formatado = f"{valor_float:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+                                # Capturar acumulado de dezembro
+                                if mes_num == 12:
+                                    valor_acum_sigis = float(df_mes['valor_acumulado'].values[0]) if 'valor_acumulado' in df_mes.columns else valor_float
                             except:
                                 valor_formatado = str(valor)
                         else:
@@ -2207,12 +3417,16 @@ def pagina_relatorios_verificacao():
                         if valor != "-":
                             dados_grafico['informacao'].append(f"SIGIS: {t_sigis}")
                             dados_grafico['descricao'].append(f"SIGIS: {desc_sigis}")
-                            dados_grafico['mes'].append(str(mes))
-                            dados_grafico['mes_formatado'].append(mes_fmt)
+                            dados_grafico['mes'].append(f"{mes_num:02d}/{ano_selecionado}")
+                            dados_grafico['mes_formatado'].append(f"{mes_num:02d}/{ano_selecionado}")
                             dados_grafico['valor'].append(float(valor))
                             dados_grafico['nivel'].append('sigis')
                             dados_grafico['cor'].append(cores_por_nivel['sigis'])
+                            dados_grafico['acumulado'].append(valor_acum_sigis if mes_num == 12 else 0)
                     
+                    # Coluna Acumulado - USAR SIGIS
+                    valor_acum_fmt = f"{valor_acum_sigis:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.') if valor_acum_sigis > 0 else "-"
+                    html += f'<td style="padding: 0.75rem; border: 1px solid #d0d8e0; text-align: right;">{valor_acum_fmt}</td>'
                     html += '</tr>'
         
         html += '</tbody></table></div>'
@@ -2220,7 +3434,7 @@ def pagina_relatorios_verificacao():
         
         return dados_grafico, html
     
-    def gerar_excel_formatado(dados_grafico, html_tabela, codigo_sinisa, municipio_selecionado):
+    def gerar_excel_formatado(dados_grafico, html_tabela, codigo_sinisa, municipio_selecionado, ano_selecionado):
         """Gera Excel com a mesma formatação e estilo da tabela"""
         from openpyxl import Workbook
         from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
@@ -2240,6 +3454,7 @@ def pagina_relatorios_verificacao():
         ws['A1'] = "Informação"
         for idx, mes in enumerate(meses_unicos, start=2):
             ws.cell(row=1, column=idx).value = mes
+        ws.cell(row=1, column=len(meses_unicos) + 2).value = "Anual"
         
         # Estilos
         header_fill = PatternFill(start_color="0B3040", end_color="0B3040", fill_type="solid")
@@ -2257,7 +3472,7 @@ def pagina_relatorios_verificacao():
         )
         
         # Aplicar estilo ao cabeçalho
-        for col in range(1, len(meses_unicos) + 2):
+        for col in range(1, len(meses_unicos) + 3):
             cell = ws.cell(row=1, column=col)
             cell.fill = header_fill
             cell.font = header_font
@@ -2306,11 +3521,21 @@ def pagina_relatorios_verificacao():
                 cell.border = border
                 cell.alignment = Alignment(horizontal='right', vertical='center')
             
+            # Coluna Acumulado - USAR valor_acumulado
+            acumulado_valor = df_info['acumulado'].values[0] if len(df_info['acumulado'].values) > 0 else 0
+            ws.cell(row=row_num, column=len(meses_unicos) + 2).value = acumulado_valor
+            cell = ws.cell(row=row_num, column=len(meses_unicos) + 2)
+            cell.fill = fill
+            cell.font = font
+            cell.border = border
+            cell.alignment = Alignment(horizontal='right', vertical='center')
+            cell.number_format = '#,##0.00'
+            
             row_num += 1
         
         # Ajustar largura das colunas
         ws.column_dimensions['A'].width = 80
-        for idx in range(2, len(meses_unicos) + 2):
+        for idx in range(2, len(meses_unicos) + 3):
             ws.column_dimensions[get_column_letter(idx)].width = 15
         
         # Salvar em buffer
@@ -2321,7 +3546,7 @@ def pagina_relatorios_verificacao():
         return buffer
     
     # Interface
-    col1, col2 = st.columns([2, 3])
+    col1, col2 = st.columns([2, 2])
     
     # Obter opções de informações
     opcoes_info, info_dict = get_informacoes_verificacao()
@@ -2357,27 +3582,37 @@ def pagina_relatorios_verificacao():
             exibir_detalhes_modal(row, "verif_0")
             st.markdown("---")
             
-            # Tabela de verificação
-            col_titulo, col_botao = st.columns([1, 0.3], vertical_alignment="center")
+            # Tabela de verificação - LAYOUT COM ANO E BOTÃO
+            col_titulo, col_ano, col_botao = st.columns([1.5, 0.8, 0.7], vertical_alignment="center")
             
             with col_titulo:
                 st.markdown("#### 📊 Composição da Informação")
             
+            with col_ano:
+                # Obter anos disponíveis
+                anos_disponiveis = sorted(df_dados_sigis['data'].dt.year.unique(), reverse=True)
+                ano_selecionado = st.selectbox(
+                    "Ano",
+                    anos_disponiveis,
+                    key="ano_verif_select",
+                    label_visibility="collapsed"
+                )
+            
             with col_botao:
                 pass
             
-            dados_grafico, html_tabela = criar_tabela_verificacao(informacao_selecionada, municipio_selecionado)
+            dados_grafico, html_tabela = criar_tabela_verificacao(informacao_selecionada, municipio_selecionado, ano_selecionado)
             
             if dados_grafico is not None:
                 # Botão de download alinhado à direita
                 with col_botao:
                     # Gerar Excel formatado
-                    buffer_excel = gerar_excel_formatado(dados_grafico, html_tabela, informacao_selecionada, municipio_selecionado)
+                    buffer_excel = gerar_excel_formatado(dados_grafico, html_tabela, informacao_selecionada, municipio_selecionado, ano_selecionado)
                     
                     st.download_button(
                         label="📥 Baixar",
                         data=buffer_excel,
-                        file_name=f"verificacao_{informacao_selecionada}_{municipio_selecionado}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                        file_name=f"verificacao_{informacao_selecionada}_{municipio_selecionado}_{ano_selecionado}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True
                     )
@@ -2385,7 +3620,7 @@ def pagina_relatorios_verificacao():
                 st.markdown("---")
                 
                 # ============================================================
-                # GRÁFICO OPÇÃO 1: COLUNAS SIGIS + LINHAS HIERARQUIA
+                # GRÁFICO: COLUNAS SIGIS + LINHAS HIERARQUIA
                 # ============================================================
                 st.markdown("#### 📈 Gráfico de Evolução")
                 
@@ -2471,7 +3706,7 @@ def pagina_relatorios_verificacao():
                 )
                 
                 fig1.update_layout(
-                    title=f"Composição de {informacao_selecionada} - {municipio_selecionado}",
+                    title=f"Composição de {informacao_selecionada} - {municipio_selecionado} ({ano_selecionado})",
                     xaxis_title="",
                     barmode='stack',
                     hovermode='x unified',
@@ -2518,6 +3753,407 @@ def pagina_relatorios_verificacao():
     st.markdown("#### ⚠️ Avisos e Erros")
     st.info("⏳ **Esta seção está em construção.**")
 
+def pagina_relatorios_conferencia_sinisa():
+    """
+    Relatório Conferência SINISA - Baseado no relatório Verificação
+    Modificações:
+    1. Remove filtro de Município
+    2. Mantém filtro de Informação/Indicador
+    3. Mantém subseção "📖 Detalhes da Informação"
+    4. Mantém filtros e botão baixar em "📊 Composição da Informação"
+       - Linhas: Municípios
+       - Colunas: Componentes/Termos da informação selecionada
+       - Valores: valor_acumulado do último mês com dados do ano
+    5. Remove subseções "📈 Gráfico de Evolução" e "⚠️ Avisos e Erros"
+    6. Adiciona aba com valores mensais de todos os municípios
+    """
+    st.markdown("""
+    <div class="header-container">
+        <h1 class="header-title">📚 SINISA</h1>
+        <p class="header-subtitle">Sistema Nacional de Informações sobre Saneamento</p>
+    </div>
+    """, unsafe_allow_html=True)
+    st.markdown("### 📋 Conferência SINISA")
+    
+    # Carregar dados - CORRIGIDO
+    df_glossario = load_data()
+    df_correspondencia = load_correspondencia_sigis_sinisa()
+    df_dados_sigis = load_dados_sigis()
+    df_sinisa = load_dados_sinisa()
+    
+    if df_glossario is None or df_correspondencia is None or df_dados_sigis is None or df_sinisa is None:
+        st.error("❌ Não foi possível carregar os dados necessários")
+        return
+    
+    # TRATAMENTO ROBUSTO DE DADOS
+    df_correspondencia['codigo_sinisa'] = df_correspondencia['codigo_sinisa'].astype(str).str.strip()
+    df_correspondencia['termos_sinisa'] = df_correspondencia['termos_sinisa'].astype(str).str.strip()
+    
+    def limpar_codigo_sigis(val):
+        if pd.isna(val) or val == "" or str(val).strip() == "nan":
+            return ""
+        val_str = str(val).strip()
+        if val_str.endswith('.0'):
+            return val_str[:-2]
+        return val_str
+        
+    df_correspondencia['termos_sigis'] = df_correspondencia['termos_sigis'].apply(limpar_codigo_sigis)
+    df_dados_sigis['cod_sigis'] = df_dados_sigis['cod_sigis'].apply(limpar_codigo_sigis)
+    
+    # ========== FUNÇÕES AUXILIARES ==========
+    
+    @st.cache_data
+    def get_informacoes_conferencia():
+        """Obtém lista de informações únicas do glossário com código + descrição"""
+        informacoes_dict = {}
+        for _, row in df_glossario.iterrows():
+            if pd.notna(row['Código da informação']):
+                codigo = str(row['Código da informação']).strip()
+                nome = str(row['Nome da informação']).strip()
+                informacoes_dict[f"{codigo} - {nome}"] = codigo
+        
+        opcoes = ["Selecione uma informação"] + sorted(informacoes_dict.keys())
+        return opcoes, informacoes_dict
+    
+    def get_descritivo_informacao(codigo_informacao):
+        """Obtém descritivo completo da informação"""
+        df_info = df_glossario[df_glossario['Código da informação'].astype(str).str.strip() == codigo_informacao]
+        if len(df_info) == 0:
+            return None
+        return df_info.iloc[0]
+    
+    def get_componentes_informacao(codigo_selecionado):
+        """Obtém os componentes (termos) de uma informação SINISA"""
+        # 1. Tentar buscar como código principal (ex: GFI1003)
+        df_comp_principal = df_correspondencia[df_correspondencia['codigo_sinisa'] == codigo_selecionado]
+        
+        if len(df_comp_principal) > 0:
+            return df_comp_principal[['termos_sinisa', 'termos_sigis']].drop_duplicates().values.tolist()
+            
+        # 2. Se não encontrou, tentar buscar como termo (ex: GTA1209)
+        df_comp_termo = df_correspondencia[df_correspondencia['termos_sinisa'] == codigo_selecionado]
+        
+        if len(df_comp_termo) > 0:
+            return df_comp_termo[['termos_sinisa', 'termos_sigis']].drop_duplicates().values.tolist()
+            
+        return []
+    
+    def get_descricao_termo(termo_sinisa):
+        """Obtém descrição de um termo SINISA"""
+        df_termo = df_glossario[df_glossario['Código da informação'].astype(str).str.strip() == termo_sinisa]
+        if len(df_termo) == 0:
+            return ""
+        return str(df_termo.iloc[0]['Nome da informação']).strip()
+    
+    # ========== SEÇÃO 1: FILTROS ==========
+    st.markdown("#### 🔍 Filtros")
+    
+    # Obter opções de informações
+    opcoes_info, info_dict = get_informacoes_conferencia()
+    
+    informacao_selecionada_display = st.selectbox(
+        "Selecione a Informação/Indicador",
+        opcoes_info,
+        key="conferencia_sinisa_info",
+        index=0
+    )
+    
+    # Extrair código da seleção
+    if informacao_selecionada_display != "Selecione uma informação":
+        informacao_selecionada = info_dict[informacao_selecionada_display]
+    else:
+        informacao_selecionada = None
+    
+    if informacao_selecionada is None:
+        st.warning("⚠️ Selecione uma informação para continuar.")
+        return
+    
+    # Obter os componentes/termos da informação selecionada
+    componentes = get_componentes_informacao(informacao_selecionada)
+    
+    if not componentes:
+        st.warning(f"Nenhum componente encontrado para '{informacao_selecionada}'.")
+        return
+    
+    # ========== SEÇÃO 2: DETALHES DA INFORMAÇÃO ==========
+    st.markdown("#### 📖 Detalhes da Informação")
+    
+    row = get_descritivo_informacao(informacao_selecionada)
+    
+    if row is not None:
+        exibir_detalhes_modal(row, "conferencia_0")
+    
+    st.markdown("---")
+    
+    # ========== SEÇÃO 3: COMPOSIÇÃO DA INFORMAÇÃO ==========
+    st.markdown("#### 📊 Composição da Informação")
+    
+    # Filtro de Ano, Mensagem de Data e Botão Baixar - TUDO NA MESMA LINHA
+    col_ano, col_data, col_botao = st.columns([0.8, 1.8, 0.8], vertical_alignment="center")
+    
+    with col_ano:
+        # Filtro de Ano
+        anos_disponiveis = sorted(df_dados_sigis['data'].dt.year.unique(), reverse=True)
+        ano_selecionado = st.selectbox(
+            "Ano",
+            options=anos_disponiveis,
+            key="conferencia_sinisa_ano",
+            label_visibility="collapsed"
+        )
+    
+    # Filtrar dados SIGIS pelo ano
+    df_municipio = df_dados_sigis[
+        (df_dados_sigis['data'].dt.year == ano_selecionado)
+    ].copy()
+    
+    if len(df_municipio) == 0:
+        st.warning(f"Nenhum dado disponível para {ano_selecionado}.")
+        return
+    
+    # Converter data para datetime
+    df_municipio['data'] = pd.to_datetime(df_municipio['data'])
+    
+    # Obter o último mês com dados do ano
+    meses_disponiveis = sorted(df_municipio['data'].dt.month.unique())
+    if not meses_disponiveis:
+        st.warning(f"Nenhum dado disponível para {ano_selecionado}.")
+        return
+    
+    ultimo_mes = meses_disponiveis[-1]
+    
+    # Filtrar para o último mês
+    df_ultimo_mes = df_municipio[df_municipio['data'].dt.month == ultimo_mes].copy()
+    
+    # Criar tabela com municípios nas linhas e componentes nas colunas
+    # Extrair apenas os códigos SIGIS dos componentes
+    codigos_sigis = [termo_sigis for termo_sinisa, termo_sigis in componentes if termo_sigis]
+    
+    # Filtrar dados para os códigos SIGIS
+    df_sigis_filtrado = df_ultimo_mes[df_ultimo_mes['cod_sigis'].isin(codigos_sigis)].copy()
+    
+    if len(df_sigis_filtrado) == 0:
+        st.warning(f"Nenhum dado disponível para os componentes de '{informacao_selecionada}' em {ano_selecionado}.")
+        return
+    
+    # Criar tabela pivot: municípios (linhas) x componentes (colunas)
+    tabela_conferencia = df_sigis_filtrado.pivot_table(
+        index='nome_localidade',
+        columns='cod_sigis',
+        values='valor_acumulado',
+        aggfunc='first'
+    )
+    
+    # Reordenar colunas conforme a ordem dos componentes
+    colunas_ordenadas = [col for col in codigos_sigis if col in tabela_conferencia.columns]
+    tabela_conferencia = tabela_conferencia[colunas_ordenadas]
+    
+    # Renomear colunas com descrição - MANTÉM CÓDIGO + DESCRIÇÃO
+    colunas_renomeadas = {}
+    for cod_sigis in colunas_ordenadas:
+        df_desc = df_sigis_filtrado[df_sigis_filtrado['cod_sigis'] == cod_sigis]
+        desc = df_desc['desc_sigis'].values[0] if len(df_desc) > 0 else cod_sigis
+        
+        # Manter código + descrição (ex: "1 - VOLUME PRODUZIDO TOTAL")
+        colunas_renomeadas[cod_sigis] = desc
+    
+    tabela_conferencia = tabela_conferencia.rename(columns=colunas_renomeadas)
+    
+    # Renomear índice de nome_localidade para Município
+    tabela_conferencia.index.name = 'Município'
+    
+    # Formatar valores
+    tabela_conferencia_formatada = tabela_conferencia.copy()
+    for col in tabela_conferencia_formatada.columns:
+        tabela_conferencia_formatada[col] = tabela_conferencia_formatada[col].apply(
+            lambda x: f"{x:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.') if pd.notna(x) else '-'
+        )
+    
+    # Informação sobre o período - POSICIONADA ANTES DO BOTÃO
+    with col_data:
+        st.markdown(f"""
+        <div style="background-color: #EBF2FB; padding: 8px 12px; border-radius: 4px; border-left: 4px solid #0B3040; font-size: 13px; color: #333;">
+            📅 Dados referentes ao mês {ultimo_mes:02d}/{ano_selecionado}
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Botão Baixar - POSICIONADO À DIREITA
+    with col_botao:
+        # Preparar dados para download - COM MÚLTIPLAS ABAS
+        excel_buffer = BytesIO()
+        
+        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+            # ========== ABA 1: CONFERÊNCIA (Acumulado) ==========
+            tabela_conferencia.to_excel(
+                writer,
+                sheet_name='Conferência',
+                startrow=0
+            )
+            
+            # ========== ABA 2: VALORES MENSAIS ==========
+            # Criar tabela com todos os meses do ano
+            df_todos_meses = df_municipio[df_municipio['cod_sigis'].isin(codigos_sigis)].copy()
+            
+            # Criar estrutura: Município | Código | Descrição | Mês 01 | Mês 02 | ... | Mês 12 | Anual
+            dados_mensais = []
+            municipios_unicos = sorted(df_todos_meses['nome_localidade'].unique())
+            
+            for municipio in municipios_unicos:
+                df_mun = df_todos_meses[df_todos_meses['nome_localidade'] == municipio]
+                
+                # Para cada código SIGIS, criar uma linha
+                for cod_sigis in codigos_sigis:
+                    df_sigis_mun = df_mun[df_mun['cod_sigis'] == cod_sigis]
+                    
+                    if len(df_sigis_mun) > 0:
+                        # Obter descrição do SIGIS
+                        desc_sigis = df_sigis_mun['desc_sigis'].values[0]
+                        
+                        # Separar código e descrição
+                        if '-' in desc_sigis:
+                            partes = desc_sigis.split('-', 1)
+                            codigo = partes[0].strip()
+                            descricao = partes[1].strip()
+                        else:
+                            codigo = desc_sigis
+                            descricao = ""
+                        
+                        linha = {
+                            'Município': municipio,
+                            'Código': codigo,
+                            'Descrição': descricao
+                        }
+                        
+                        # Adicionar valores de cada mês
+                        for mes in range(1, 13):
+                            df_mes = df_sigis_mun[df_sigis_mun['data'].dt.month == mes]
+                            valor = df_mes['valor'].values[0] if len(df_mes) > 0 else 0
+                            linha[f'{mes:02d}/{ano_selecionado}'] = valor
+                        
+                        # Adicionar valor anual (acumulado de dezembro)
+                        df_dezembro = df_sigis_mun[df_sigis_mun['data'].dt.month == 12]
+                        valor_anual = df_dezembro['valor_acumulado'].values[0] if len(df_dezembro) > 0 else 0
+                        linha['Anual'] = valor_anual
+                        
+                        dados_mensais.append(linha)
+            
+            df_mensais = pd.DataFrame(dados_mensais)
+            df_mensais.to_excel(
+                writer,
+                sheet_name='Valores Mensais',
+                startrow=0,
+                index=False
+            )
+            
+            # Aplicar formatação em ambas as abas
+            from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+            
+            workbook = writer.book
+            
+            # Formatação ABA 1: Conferência
+            worksheet1 = writer.sheets['Conferência']
+            header_fill = PatternFill(start_color="0B3040", end_color="0B3040", fill_type="solid")
+            header_font = Font(bold=True, color="FFFFFF", size=11)
+            border = Border(
+                left=Side(style='thin', color='d0d8e0'),
+                right=Side(style='thin', color='d0d8e0'),
+                top=Side(style='thin', color='d0d8e0'),
+                bottom=Side(style='thin', color='d0d8e0')
+            )
+            
+            # Aplicar estilo ao cabeçalho ABA 1
+            for cell in worksheet1[1]:
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.border = border
+                cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            
+            # Aplicar formatação aos dados ABA 1
+            for row in worksheet1.iter_rows(min_row=2, max_row=worksheet1.max_row, min_col=2, max_col=worksheet1.max_column):
+                for cell in row:
+                    cell.border = border
+                    cell.alignment = Alignment(horizontal='right', vertical='center')
+                    cell.number_format = '#,##0.00'
+            
+            # Ajustar largura das colunas ABA 1
+            
+             # Alinhar coluna Município para esquerda
+            for row in worksheet1.iter_rows(min_row=1, max_row=worksheet1.max_row, min_col=1, max_col=1):
+                for cell in row:
+                    cell.alignment = Alignment(horizontal='left', vertical='center')
+
+            for column in worksheet1.columns:
+                max_length = 0
+                column_letter = column[0].column_letter
+                for cell in column:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                adjusted_width = min(max_length + 2, 50)
+                worksheet1.column_dimensions[column_letter].width = adjusted_width
+            
+            # Congelar primeira linha e primeira coluna ABA 1
+            worksheet1.freeze_panes = 'B2'
+            
+            # Formatação ABA 2: Valores Mensais
+            worksheet2 = writer.sheets['Valores Mensais']
+            
+            # Aplicar estilo ao cabeçalho ABA 2
+            for cell in worksheet2[1]:
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.border = border
+                cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=False)
+            
+            # Aplicar formatação aos dados ABA 2
+            # Colunas de valores (a partir da coluna 4 - Meses)
+            for row in worksheet2.iter_rows(min_row=2, max_row=worksheet2.max_row, min_col=4, max_col=worksheet2.max_column):
+                for cell in row:
+                    cell.border = border
+                    cell.alignment = Alignment(horizontal='right', vertical='center')
+                    cell.number_format = '#,##0.00'
+            
+            # Aplicar formatação às colunas de Município, Código e Descrição (sem número)
+            for row in worksheet2.iter_rows(min_row=2, max_row=worksheet2.max_row, min_col=1, max_col=3):
+                for cell in row:
+                    cell.border = border
+                    cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=False)
+            
+            # Ajustar largura das colunas ABA 2
+            worksheet2.column_dimensions['A'].width = 25  # Município
+            worksheet2.column_dimensions['B'].width = 10  # Código
+            worksheet2.column_dimensions['C'].width = 40  # Descrição
+            
+            for col_idx in range(4, worksheet2.max_column + 1):
+                column_letter = chr(64 + col_idx) if col_idx < 27 else chr(64 + col_idx // 26) + chr(64 + col_idx % 26)
+                worksheet2.column_dimensions[column_letter].width = 15
+            
+            # Congelar primeira linha e primeiras três colunas ABA 2
+            worksheet2.freeze_panes = 'D2'
+        
+        excel_buffer.seek(0)
+        
+        st.download_button(
+            label="📥 Baixar Relatório",
+            data=excel_buffer,
+            file_name=f"Conferencia_SINISA_{informacao_selecionada}_{ano_selecionado}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="conferencia_sinisa_download",
+            use_container_width=True
+        )
+    
+    st.markdown("---")
+    
+    # Exibir tabela - CORRIGIDO: altura aumentada para mostrar todos os municípios
+    num_municipios = len(tabela_conferencia_formatada)
+    altura_tabela = max(400, num_municipios * 35 + 50)  # 35px por linha + 50px para cabeçalho
+    
+    st.dataframe(
+        tabela_conferencia_formatada,
+        use_container_width=True,
+        height=altura_tabela
+    )
 def pagina_infraestrutura():
     """Página Infraestrutura"""
     st.markdown("""
@@ -2737,300 +4373,6 @@ SIDEBAR_STYLES = """
 st.markdown(SIDEBAR_STYLES, unsafe_allow_html=True)
 
 # ============================================================================
-# ESTRUTURA DE NAVEGAÇÃO COM SIDEBAR - VERSÃO CORRIGIDA
-# ============================================================================
-
-def pagina_glossario_informacoes_com_stats():
-    """Página Glossário - Informações com Estatísticas"""
-    st.markdown("""
-    <div class="header-container">
-        <h1 class="header-title">📚 SINISA</h1>
-        <p class="header-subtitle">Sistema Nacional de Informações sobre Saneamento</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    st.markdown("### 📋 Glossário - Informações")
-    
-    # Inicializar session state
-    if "modulo_filter" not in st.session_state:
-        st.session_state.modulo_filter = "Todos"
-    if "formulario_filter" not in st.session_state:
-        st.session_state.formulario_filter = "Todos"
-    if "subformulario_filter" not in st.session_state:
-        st.session_state.subformulario_filter = "Todos"
-    if "subgrupo_filter" not in st.session_state:
-        st.session_state.subgrupo_filter = "Todos"
-    if "area_filter" not in st.session_state:
-        st.session_state.area_filter = "Todos"
-    if "search_codigo" not in st.session_state:
-        st.session_state.search_codigo = ""
-    if "search_descricao" not in st.session_state:
-        st.session_state.search_descricao = ""
-    if "show_stats" not in st.session_state:
-        st.session_state.show_stats = False
-    
-    # Funções de filtro
-    @st.cache_data
-    def get_modulos():
-        modulos = ["Todos"] + sort_modulos(df['Módulo'].dropna().unique().tolist())
-        return modulos
-    
-    def get_filtro_glossario(coluna, modulo="Todos", formulario="Todos", subformulario="Todos", subgrupo="Todos"):
-        """Obtém valores únicos para filtros do glossário"""
-        df_temp = df.copy()
-        if modulo != "Todos":
-            df_temp = df_temp[df_temp['Módulo'] == modulo]
-        if formulario != "Todos":
-            df_temp = df_temp[df_temp['Formulário'] == formulario]
-        if subformulario != "Todos":
-            df_temp = df_temp[df_temp['Subformulário'] == subformulario]
-        if subgrupo != "Todos":
-            df_temp = df_temp[df_temp['Subgrupo'] == subgrupo]
-        return ["Todos"] + sorted(df_temp[coluna].dropna().unique().tolist())
-    
-    # Linha 1 - Filtros
-    col1, col2, col3, col4, col5, col6 = st.columns([1.5, 1.5, 1.5, 1.5, 1.5, 1], gap="small")
-    
-    with col6:
-        st.markdown("<div style='padding-top: 12px;'></div>", unsafe_allow_html=True)
-        if st.button("🔄 Limpar Filtros", key="btn_clear_filters", use_container_width=True):
-            st.session_state.modulo_filter = "Todos"
-            st.session_state.formulario_filter = "Todos"
-            st.session_state.subformulario_filter = "Todos"
-            st.session_state.subgrupo_filter = "Todos"
-            st.session_state.area_filter = "Todos"
-            st.session_state.search_codigo = ""
-            st.session_state.search_descricao = ""
-            st.rerun()
-    
-    with col1:
-        modulo_selecionado = st.selectbox("Módulo", get_modulos(), key="modulo_filter", index=0)
-    
-    with col2:
-        formulario_selecionado = st.selectbox("Formulário", 
-            get_filtro_glossario('Formulário', modulo_selecionado), key="formulario_filter", index=0)
-    
-    with col3:
-        subformulario_selecionado = st.selectbox("Subformulário", 
-            get_filtro_glossario('Subformulário', modulo_selecionado, formulario_selecionado), 
-            key="subformulario_filter", index=0)
-    
-    with col4:
-        subgrupo_selecionado = st.selectbox("Subgrupo", 
-            get_filtro_glossario('Subgrupo', modulo_selecionado, formulario_selecionado, subformulario_selecionado), 
-            key="subgrupo_filter", index=0)
-    
-    with col5:
-        area_selecionada = st.selectbox("Área Responsável", 
-            get_filtro_glossario('Área Responsável', modulo_selecionado, formulario_selecionado, 
-                                subformulario_selecionado, subgrupo_selecionado), 
-            key="area_filter", index=0)
-    
-    # Linha 2 - Buscas
-    col_codigo, col_descricao = st.columns([1.5, 4.5], gap="small")
-    with col_codigo:
-        busca_codigo = st.text_input("🔎 Buscar por Código", key="search_codigo")
-    with col_descricao:
-        busca_descricao = st.text_input("🔎 Buscar por Descrição", key="search_descricao")
-    
-    # Aplicar filtros
-    df_filtrado = aplicar_filtros(df, {
-        'Módulo': modulo_selecionado,
-        'Formulário': formulario_selecionado,
-        'Subformulário': subformulario_selecionado,
-        'Subgrupo': subgrupo_selecionado,
-        'Área Responsável': area_selecionada
-    })
-    
-    if busca_codigo:
-        df_filtrado = df_filtrado[df_filtrado['Código da informação'].str.contains(busca_codigo, case=False, na=False)]
-    if busca_descricao:
-        df_filtrado = df_filtrado[df_filtrado['Nome da informação'].str.contains(busca_descricao, case=False, na=False)]   
-    
-    # Função de exibição de estatísticas modal
-    def exibir_estatisticas_modal(df_filtrado):
-        """Exibe estatísticas dos dados filtrados"""
-        st.markdown(f"""
-        <div class="detail-section">
-            <h3 style="color: #1f4788; margin-top: 0; margin-bottom: 1rem;">📊 Análise dos Dados</h3>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        col1, col2, col3, col4 = st.columns(4, gap="small")
-        
-        with col1:
-            st.markdown(f"""
-            <div class="metric-card">
-                <div class="metric-label">📋 Total</div>
-                <div class="metric-value">{len(df_filtrado)}</div>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        with col2:
-            st.markdown(f"""
-            <div class="metric-card">
-                <div class="metric-label">📦 Módulos</div>
-                <div class="metric-value">{df_filtrado['Módulo'].nunique()}</div>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        with col3:
-            st.markdown(f"""
-            <div class="metric-card">
-                <div class="metric-label">📝 Formulários</div>
-                <div class="metric-value">{df_filtrado['Formulário'].nunique()}</div>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        with col4:
-            st.markdown(f"""
-            <div class="metric-card">
-                <div class="metric-label">🏷️ Subgrupos</div>
-                <div class="metric-value">{df_filtrado['Subgrupo'].nunique() if 'Subgrupo' in df_filtrado.columns else 0}</div>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        # Gráficos
-        col1, col2, col3, col4 = st.columns(4, gap="small")
-        
-        with col1:
-            if len(df_filtrado) > 0:
-                modulo_count = df_filtrado['Módulo'].value_counts().head(6)
-                fig = go.Figure(data=[go.Bar(x=modulo_count.values, y=modulo_count.index, orientation='h', 
-                    marker=dict(color=modulo_count.values, colorscale='Blues', line=dict(color='#1f4788', width=1)), 
-                    text=modulo_count.values, textposition='auto', hovertemplate='<b>%{y}</b><br>%{x}<extra></extra>')])
-                fig.update_layout(height=250, margin=dict(l=100, r=10, t=10, b=10), plot_bgcolor='rgba(245, 247, 250, 0.5)', 
-                    paper_bgcolor='rgba(255, 255, 255, 0)', xaxis=dict(showgrid=True, gridwidth=1, gridcolor='#e0e0e0', showticklabels=False), 
-                    yaxis=dict(showgrid=False), font=dict(family='Segoe UI', size=9, color='#333'), hovermode='closest', showlegend=False)
-                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-        
-        with col2:
-            if len(df_filtrado) > 0:
-                formulario_count = df_filtrado['Formulário'].value_counts().head(6)
-                fig = go.Figure(data=[go.Bar(x=formulario_count.values, y=formulario_count.index, orientation='h', 
-                    marker=dict(color=formulario_count.values, colorscale='Greens', line=dict(color='#2d5aa8', width=1)), 
-                    text=formulario_count.values, textposition='auto', hovertemplate='<b>%{y}</b><br>%{x}<extra></extra>')])
-                fig.update_layout(height=250, margin=dict(l=100, r=10, t=10, b=10), plot_bgcolor='rgba(245, 247, 250, 0.5)', 
-                    paper_bgcolor='rgba(255, 255, 255, 0)', xaxis=dict(showgrid=True, gridwidth=1, gridcolor='#e0e0e0', showticklabels=False), 
-                    yaxis=dict(showgrid=False), font=dict(family='Segoe UI', size=9, color='#333'), hovermode='closest', showlegend=False)
-                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-        
-        with col3:
-            if len(df_filtrado) > 0 and 'Subgrupo' in df_filtrado.columns:
-                subgrupo_count = df_filtrado['Subgrupo'].value_counts().head(6)
-                fig = go.Figure(data=[go.Bar(x=subgrupo_count.values, y=subgrupo_count.index, orientation='h', 
-                    marker=dict(color=subgrupo_count.values, colorscale='Purples', line=dict(color='#6b21a8', width=1)), 
-                    text=subgrupo_count.values, textposition='auto', hovertemplate='<b>%{y}</b><br>%{x}<extra></extra>')])
-                fig.update_layout(height=250, margin=dict(l=100, r=10, t=10, b=10), plot_bgcolor='rgba(245, 247, 250, 0.5)', 
-                    paper_bgcolor='rgba(255, 255, 255, 0)', xaxis=dict(showgrid=True, gridwidth=1, gridcolor='#e0e0e0', showticklabels=False), 
-                    yaxis=dict(showgrid=False), font=dict(family='Segoe UI', size=9, color='#333'), hovermode='closest', showlegend=False)
-                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-        
-        with col4:
-            if len(df_filtrado) > 0 and 'Área Responsável' in df_filtrado.columns:
-                area_count = df_filtrado['Área Responsável'].value_counts().head(6)
-                fig = go.Figure(data=[go.Bar(x=area_count.values, y=area_count.index, orientation='h', 
-                    marker=dict(color=area_count.values, colorscale='Oranges', line=dict(color='#d97706', width=1)), 
-                    text=area_count.values, textposition='auto', hovertemplate='<b>%{y}</b><br>%{x}<extra></extra>')])
-                fig.update_layout(height=250, margin=dict(l=100, r=10, t=10, b=10), plot_bgcolor='rgba(245, 247, 250, 0.5)', 
-                    paper_bgcolor='rgba(255, 255, 255, 0)', xaxis=dict(showgrid=True, gridwidth=1, gridcolor='#e0e0e0', showticklabels=False), 
-                    yaxis=dict(showgrid=False), font=dict(family='Segoe UI', size=9, color='#333'), hovermode='closest', showlegend=False)
-                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-        
-        st.markdown("<div style='margin-top: 1rem;'></div>", unsafe_allow_html=True)
-        if st.button("✕ Fechar", key="close_stats", help="Fechar estatísticas"):
-            st.session_state.show_stats = False
-            st.rerun()
-    
-    st.markdown("---")
-    
-    if len(df_filtrado) == 0:
-        st.warning("Nenhum resultado encontrado. Tente ajustar os filtros.")
-    else:
-        # Linha com resultados e botões - USANDO st.columns COM gap="small"
-        col_results, col_stats, col_export = st.columns([2.5, 0.7, 0.7], gap="small")
-        
-        with col_results:
-            st.markdown(f"#### Resultados: {len(df_filtrado)} registros")
-        
-        with col_stats:
-            if st.button("📊 Estatísticas", key="btn_stats_main", use_container_width=True):
-                st.session_state.show_stats = True
-        
-        with col_export:
-            buffer = BytesIO()
-            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                df_filtrado.to_excel(writer, index=False, sheet_name='Glossário')
-            buffer.seek(0)
-            st.download_button(
-                label="📥 Baixar dados em Excel",
-                data=buffer,
-                file_name=f"glossario_sinisa_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key=f"download_glossario_{datetime.now().timestamp()}",
-                use_container_width=True
-            )
-        
-        st.markdown("")
-
-        if st.session_state.get("show_stats", False):
-            exibir_estatisticas_modal(df_filtrado)
-            st.markdown("---")
-        
-        # Tabela de resultados
-        col1, col2, col3, col4, col5, col6, col7, col8 = st.columns([0.6, 3.0, 0.6, 0.6, 1.5, 0.6, 0.8, 0.4], gap="small", vertical_alignment="center")
-        
-        with col1:
-            st.markdown('<div class="table-header">Código</div>', unsafe_allow_html=True)
-        with col2:
-            st.markdown('<div class="table-header">Nome da Informação</div>', unsafe_allow_html=True)
-        with col3:
-            st.markdown('<div class="table-header">Módulo</div>', unsafe_allow_html=True)
-        with col4:
-            st.markdown('<div class="table-header">Formulário</div>', unsafe_allow_html=True)
-        with col5:
-            st.markdown('<div class="table-header">Subformulário</div>', unsafe_allow_html=True)
-        with col6:
-            st.markdown('<div class="table-header">Unidade</div>', unsafe_allow_html=True)
-        with col7:
-            st.markdown('<div class="table-header">Área Resp.</div>', unsafe_allow_html=True)
-        with col8:
-            st.markdown('<div class="table-header">Ação</div>', unsafe_allow_html=True)
-        
-        for idx, row in df_filtrado.iterrows():
-            col1, col2, col3, col4, col5, col6, col7, col8 = st.columns([0.6, 3.0, 0.6, 0.6, 1.5, 0.6, 0.8, 0.4], gap="small", vertical_alignment="center")
-            
-            with col1:
-                st.markdown(f'<div class="table-row">{row["Código da informação"]}</div>', unsafe_allow_html=True)
-            
-            with col2:
-                st.markdown(f'<div class="table-row">{row["Nome da informação"]}</div>', unsafe_allow_html=True)
-            
-            with col3:
-                st.markdown(f'<div class="table-row">{row["Módulo"]}</div>', unsafe_allow_html=True)
-            
-            with col4:
-                st.markdown(f'<div class="table-row">{row["Formulário"]}</div>', unsafe_allow_html=True)
-            
-            with col5:
-                subform = row['Subformulário'] if pd.notna(row['Subformulário']) else '-'
-                st.markdown(f'<div class="table-row">{subform}</div>', unsafe_allow_html=True)
-            
-            with col6:
-                unidade = row['Unidade'] if pd.notna(row['Unidade']) else '-'
-                st.markdown(f'<div class="table-row">{unidade}</div>', unsafe_allow_html=True)
-            
-            with col7:
-                area = row['Área Responsável'] if pd.notna(row['Área Responsável']) else '-'
-                st.markdown(f'<div class="table-row">{area}</div>', unsafe_allow_html=True)
-            
-            with col8:                    
-                if st.button("🔍", key=f"detail_{idx}", help="Ver detalhes", use_container_width=True):
-                    exibir_detalhes_popup(row)
-            
-            st.markdown('<div class="table-divider"></div>', unsafe_allow_html=True)
-
-# ============================================================================
 # DICIONÁRIO DE PÁGINAS
 # ============================================================================
 PAGES = {
@@ -3045,6 +4387,7 @@ PAGES = {
         "Gerencial por Município": pagina_relatorios_municipio,
         "Consolidado": pagina_relatorios_consolidado,
         "Verificação": pagina_relatorios_verificacao,
+        "Conferência SINISA": pagina_relatorios_conferencia_sinisa,
         "Indicadores ANA": pagina_relatorios_indicadores_ana,
         "RAD (AGEMS)": pagina_relatorios_rad_agems,
 
@@ -3097,9 +4440,14 @@ def render_sidebar_navigation():
                 st.session_state["current_page"] = "Verificação"
                 st.rerun()
 
+            if st.button("☑️ Conferência SINISA", use_container_width=True, key="btn_confSinisa"):
+                st.session_state["current_page"] = "Conferência SINISA"
+                st.rerun()
+
             if st.button("💧 Indicadores ANA", use_container_width=True, key="btn_ana"):
                 st.session_state["current_page"] = "Indicadores ANA"
                 st.rerun()
+
             if st.button("📈 RAD (AGEMS)", use_container_width=True, key="btn_rad"):
                 st.session_state["current_page"] = "RAD (AGEMS)"
                 st.rerun()
